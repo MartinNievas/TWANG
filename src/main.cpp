@@ -157,6 +157,55 @@ CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number u
 RunningMedian MPUAngleSamples = RunningMedian(5);
 RunningMedian MPUWobbleSamples = RunningMedian(5);
 
+
+// declarations as this isn't a .ino file...
+
+void loadLevel();
+void spawnBoss();
+void moveBoss();
+void spawnEnemy(int pos, int dir, int speed, int wobble);
+void spawnLava(int left, int right, int ontime, int offtime, int offset, int state);
+void spawnConveyor(int startPoint, int endPoint, int dir);
+void cleanupLevel();
+void levelComplete();
+void nextLevel();
+void gameOver();
+void die();
+void tickStartup(long mm);
+void tickEnemies();
+void tickBoss();
+void drawPlayer();
+void drawExit();
+void tickSpawners();
+void tickLava();
+bool tickParticles();
+void tickConveyors();
+void tickBossKilled(long mm);
+void tickDie(long mm);
+void tickGameover(long mm);
+void tickWin(long mm);
+void drawLives();
+void drawAttack();
+int getLED(int pos);
+bool inLava(int pos);
+void save_game_stats(bool bossKill);
+void screenSaverTick();
+void getInput();
+void SFXFreqSweepWarble(int duration, int elapsedTime, int freqStart, int freqEnd, int warble);
+void SFXFreqSweepNoise(int duration, int elapsedTime, int freqStart, int freqEnd, uint8_t noiseFactor);
+void SFXtilt(int amount);
+void SFXattacking();
+void SFXdead();
+void SFXgameover();
+void SFXkill();
+void SFXwin();
+void SFXbosskilled();
+void SFXcomplete();
+long map_constrain(long x, long in_min, long in_max, long out_min, long out_max);
+void showSetupInfo();
+void updateLives();
+
+
 void setup() {
 
     Serial.begin(115200);
