@@ -18,7 +18,7 @@ class Lava
     int _ontime;
     int _offtime;
     int _offset;
-    long _lastOn;
+    unsigned long _lastOn;
     int _state;
     static const int OFF = 0;
     static const int ON = 1;

@@ -19,16 +19,15 @@
 	
 	
 */
-#define VERSION "2018-04-16"
+#define VERSION "2023-06-25"
 
 // Required libs
 #include "FastLED.h"
-#include "I2Cdev.h"
-#include "MPU6050.h"
 #include "Wire.h"
 #include "toneAC.h"
-#include "iSin.h"
+//#include "iSin.h"
 #include "RunningMedian.h"
+#include <vl53l4cd_class.h>
 
 #include <stdint.h> // uint8_t type variables
 
@@ -39,50 +38,54 @@
 #include "Lava.h"
 #include "Boss.h"
 #include "Conveyor.h"
-#include "settings.h"
 
 
 // LED Strip Setup
-#define DATA_PIN             3
-#define CLOCK_PIN            4   // ignored for Neopixel
-
+#define LED_DATA_PIN             3
+#define LED_CLOCK_PIN            13
 #define VIRTUAL_LED_COUNT 1000
+#define LED_COUNT 144
+#define LED_BRIGHTNESS 150
 
-
-
-// the strips have different low level brightness.  WS2812 tends to fade out faster at the low end
 #define APA102_CONVEYOR_BRIGHTNES 8
-#define WS2812_CONVEYOR_BRIGHTNES 40
-
 #define APA102_LAVA_OFF_BRIGHTNESS 4
-#define WS2812_LAVA_OFF_BRIGHTNESS 15
 
+#define MAX_PLAYER_SPEED    10     // Max move speed of the player
+#define LIVES_PER_LEVEL		3
+#define DEFAULT_ATTACK_WIDTH 70  // Width of the wobble attack, world is 1000 wide
+#define ATTACK_DURATION     500    // Duration of a wobble attack (ms)
+#define BOSS_WIDTH          40
 
-#define DIRECTION            1     // 0 = right to left, 1 = left to right
+#define SCREENSAVER_TIMEOUT              30000  // time until screen saver
+
+#define TOF_MIDDLE_MM = 300
+#define TOF_DEADZONE_MM = 600
+
 #define MIN_REDRAW_INTERVAL  16    // Min redraw interval (ms) 33 = 30fps / 16 = 63fps
 #define USE_GRAVITY          0     // 0/1 use gravity (LED strip going up wall)
 #define BEND_POINT           750   // 0/1000 point at which the LED strip goes up the wall
 //#define USE_LIFELEDS  // uncomment this to make Life LEDs available (not used in the B. Dring enclosure)
 
-// GAME
-long previousMillis = 0;           // Time of the last redraw
+unsigned long previousMillis = 0;           // Time of the last redraw
 int levelNumber = 0;
-
-#define TIMEOUT              30000  // time until screen saver
-
-iSin isin = iSin();
-
 
 int joystickTilt = 0;              // Stores the angle of the joystick
 int joystickWobble = 0;            // Stores the max amount of wobble
-
-// WOBBLE ATTACK
-#define DEFAULT_ATTACK_WIDTH 70  // Width of the wobble attack, world is 1000 wide
 int attack_width = DEFAULT_ATTACK_WIDTH;
-#define ATTACK_DURATION     500    // Duration of a wobble attack (ms)
-long attackMillis = 0;             // Time the attack started
+unsigned long attackMillis = 0;             // Time the attack started
 bool attacking = 0;                // Is the attack in progress?
-#define BOSS_WIDTH          40
+
+uint8_t AUDIO_VOLUME = 10; // 0-10
+
+CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
+RunningMedian MPUAngleSamples = RunningMedian(5);
+RunningMedian MPUWobbleSamples = RunningMedian(5);
+
+#define DEV_I2C Wire
+#define SerialPort Serial
+#define interruptPin PIN2
+VL53L4CD sensor_vl53l4cd_sat(&DEV_I2C, PIN_A1);
+volatile int tof_measurement_exists = 0;
 
 enum stages {
     STARTUP,
@@ -95,10 +98,10 @@ enum stages {
 } stage;
 
 int score;
-long stageStartTime;               // Stores the time the stage changed for stages that are time based
+unsigned long stageStartTime;               // Stores the time the stage changed for stages that are time based
+unsigned long lastInputTime = 0;
 int playerPosition;                // Stores the player position
 int playerPositionModifier;        // +/- adjustment to player position
-bool playerAlive;
 long killTime;
 uint8_t lives;
 bool lastLevel = false;
@@ -151,15 +154,6 @@ Conveyor conveyorPool[CONVEYOR_COUNT] = {
 
 Boss boss = Boss();
 
-// MPU
-MPU6050 accelgyro;
-CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
-RunningMedian MPUAngleSamples = RunningMedian(5);
-RunningMedian MPUWobbleSamples = RunningMedian(5);
-
-
-// declarations as this isn't a .ino file...
-
 void loadLevel();
 void spawnBoss();
 void moveBoss();
@@ -169,9 +163,8 @@ void spawnConveyor(int startPoint, int endPoint, int dir);
 void cleanupLevel();
 void levelComplete();
 void nextLevel();
-void gameOver();
 void die();
-void tickStartup(long mm);
+void tickStartup(unsigned long mm);
 void tickEnemies();
 void tickBoss();
 void drawPlayer();
@@ -181,14 +174,13 @@ void tickLava();
 bool tickParticles();
 void tickConveyors();
 void tickBossKilled(long mm);
-void tickDie(long mm);
+void tickDie(unsigned long mm);
 void tickGameover(long mm);
 void tickWin(long mm);
 void drawLives();
 void drawAttack();
 int getLED(int pos);
 bool inLava(int pos);
-void save_game_stats(bool bossKill);
 void screenSaverTick();
 void getInput();
 void SFXFreqSweepWarble(int duration, int elapsedTime, int freqStart, int freqEnd, int warble);
@@ -202,29 +194,34 @@ void SFXwin();
 void SFXbosskilled();
 void SFXcomplete();
 long map_constrain(long x, long in_min, long in_max, long out_min, long out_max);
-void showSetupInfo();
 void updateLives();
 
+void tof_interrupt() {
+    tof_measurement_exists = 1;
+}
 
 void setup() {
 
     Serial.begin(115200);
-    settings_eeprom_read();
-    showSetupInfo();
+    Serial.print("\r\nTWANG VERSION: ");
+    Serial.println(VERSION);
 
     // MPU
     Wire.begin();
-    accelgyro.initialize();
+
+    pinMode(interruptPin, INPUT_PULLUP);
+    attachInterrupt(interruptPin, tof_interrupt, FALLING);
+
+    DEV_I2C.begin(); // Initialize I2C bus.
+    sensor_vl53l4cd_sat.begin(); // Configure VL53L4CD satellite component.
+    sensor_vl53l4cd_sat.VL53L4CD_Off(); // Switch off VL53L4CD satellite component.
+    sensor_vl53l4cd_sat.InitSensor(); //Initialize VL53L4CD satellite component.
+    sensor_vl53l4cd_sat.VL53L4CD_SetRangeTiming(24, 0);
+    sensor_vl53l4cd_sat.VL53L4CD_StartRanging(); // Start Measurements
 
     // Fast LED
-    if (user_settings.led_type == strip_APA102) {
-        FastLED.addLeds<APA102, DATA_PIN, CLOCK_PIN, BGR>(leds, user_settings.led_count);
-    }
-    else {
-        FastLED.addLeds<NEOPIXEL, DATA_PIN>(leds, user_settings.led_count);
-    }
-
-    FastLED.setBrightness(user_settings.led_brightness);
+    FastLED.addLeds<APA102, LED_DATA_PIN, LED_CLOCK_PIN, BGR, DATA_RATE_MHZ(20)>(leds, LED_COUNT);
+    FastLED.setBrightness(LED_BRIGHTNESS);
     FastLED.setDither(1);
 
     // Life LEDs
@@ -237,23 +234,19 @@ void setup() {
 
     stage = STARTUP;
     stageStartTime = millis();
-    lives = user_settings.lives_per_level;
+    lives = LIVES_PER_LEVEL;
 }
 
 void loop() {
-    long mm = millis();
-
-    while(Serial.available()) {  // see if there are someone is trying to edit settings via serial port
-        processSerial(Serial.read());
-    }
+    unsigned long mm = millis();
 
     if (mm - previousMillis >= MIN_REDRAW_INTERVAL) {
         getInput();
 
-        long frameTimer = mm;
+        unsigned long frameTimer = mm;
         previousMillis = mm;
 
-        if(abs(joystickTilt) > user_settings.joystick_deadzone){
+        if(joystickTilt < 90){ // FIXME
             lastInputTime = mm;
             if(stage == SCREENSAVER){
                 levelNumber = -1;
@@ -261,16 +254,14 @@ void loop() {
                 stage = WIN;
             }
         }else{
-            if(lastInputTime+TIMEOUT < mm){
-
+            if(lastInputTime + SCREENSAVER_TIMEOUT < mm){
                 stage = SCREENSAVER;
             }
         }
         if(stage == SCREENSAVER){
             screenSaverTick();
-
         }else if(stage == STARTUP){
-            if (stageStartTime+STARTUP_FADE_DUR > mm)
+            if (stageStartTime + STARTUP_FADE_DUR > mm)
                 tickStartup(mm);
             else
             {
@@ -287,7 +278,7 @@ void loop() {
                 SFXattacking();
 
             // If not attacking, check if they should be
-            if(!attacking && joystickWobble > user_settings.attack_threshold){
+            if(!attacking && joystickTilt < -80){
                 attackMillis = mm;
                 attacking = 1;
             }
@@ -296,8 +287,7 @@ void loop() {
             playerPosition += playerPositionModifier;
             if(!attacking){
                 SFXtilt(joystickTilt);
-                int moveAmount = (joystickTilt/6.0);
-                if(DIRECTION) moveAmount = -moveAmount;
+                int moveAmount = (joystickTilt/8.0);
                 moveAmount = constrain(moveAmount, -MAX_PLAYER_SPEED, MAX_PLAYER_SPEED);
                 playerPosition -= moveAmount;
                 if(playerPosition < 0) playerPosition = 0;
@@ -346,9 +336,8 @@ void loop() {
             else
             {
                 FastLED.clear();
-                save_game_stats(false);
                 levelNumber = 0;
-                lives = user_settings.lives_per_level;
+                lives = LIVES_PER_LEVEL;
                 loadLevel();
             }
         }
@@ -362,10 +351,9 @@ void loop() {
 // ---------------------------------
 void loadLevel(){
     // leave these alone
-    FastLED.setBrightness(user_settings.led_brightness);
+    FastLED.setBrightness(LED_BRIGHTNESS);
     updateLives();
     cleanupLevel();
-    playerAlive = 1;
     lastLevel = false; // this gets changed on the boss level
 
     /// Defaults...OK to change the following items in the levels below
@@ -606,7 +594,6 @@ void levelComplete(){
     //if(levelNumber == LEVEL_COUNT){
     if (lastLevel) {
         stage = BOSS_KILLED;
-        save_game_stats(true);
     }
     if (levelNumber != 0)  // no points for the first level
     {
@@ -615,12 +602,11 @@ void levelComplete(){
 }
 
 void nextLevel(){
-
     levelNumber ++;
     //if(levelNumber > LEVEL_COUNT)
     if(lastLevel)
         levelNumber = 0;
-    lives = user_settings.lives_per_level;
+    lives = LIVES_PER_LEVEL;
     loadLevel();
 }
 
@@ -631,7 +617,6 @@ void gameOver(){
 }
 
 void die(){
-    playerAlive = 0;
     if(levelNumber > 0)
         lives--;
 
@@ -653,19 +638,19 @@ void die(){
 // ----------------------------------
 // -------- TICKS & RENDERS ---------
 // ----------------------------------
-void tickStartup(long mm)
+void tickStartup(unsigned long mm)
 {
     FastLED.clear();
     if(stageStartTime+STARTUP_WIPEUP_DUR > mm) // fill to the top with green
     {
-        int n = min(map(((mm-stageStartTime)), 0, STARTUP_WIPEUP_DUR, 0, user_settings.led_count), user_settings.led_count);  // fill from top to bottom
+        int n = min(map(((mm-stageStartTime)), 0, STARTUP_WIPEUP_DUR, 0, LED_COUNT), LED_COUNT);  // fill from top to bottom
         for(int i = 0; i<= n; i++){
             leds[i] = CRGB(0, 255, 0);
         }
     }
     else if(stageStartTime+STARTUP_SPARKLE_DUR > mm) // sparkle the full green bar
     {
-        for(int i = 0; i< user_settings.led_count; i++){
+        for(int i = 0; i< LED_COUNT; i++){
             if(random8(30) < 28)
                 leds[i] = CRGB(0, 255, 0);  // most are green
             else {
@@ -676,10 +661,10 @@ void tickStartup(long mm)
     }
     else if (stageStartTime+STARTUP_FADE_DUR > mm) // fade it out to bottom
     {
-        int n = max(map(((mm-stageStartTime)), STARTUP_SPARKLE_DUR, STARTUP_FADE_DUR, 0, user_settings.led_count), 0);  // fill from top to bottom
+        int n = max(map(((mm-stageStartTime)), STARTUP_SPARKLE_DUR, STARTUP_FADE_DUR, 0, LED_COUNT), 0);  // fill from top to bottom
         int brightness = max(map(((mm-stageStartTime)), STARTUP_SPARKLE_DUR, STARTUP_FADE_DUR, 255, 0), 0);
 
-        for(int i = n; i< user_settings.led_count; i++){
+        for(int i = n; i< LED_COUNT; i++){
             leds[i] = CRGB(0, brightness, 0);
         }
     }
@@ -754,7 +739,7 @@ void drawPlayer(){
 
 void drawExit(){
     if(!boss.Alive()){
-        leds[user_settings.led_count-1] = CRGB(0, 0, 255);
+        leds[LED_COUNT-1] = CRGB(0, 0, 255);
     }
 }
 
@@ -772,15 +757,10 @@ void tickSpawners(){
 
 void tickLava(){
     int A, B, p, i, brightness, flicker;
-    long mm = millis();
+    unsigned long mm = millis();
     uint8_t lava_off_brightness;
 
-    if (user_settings.led_type == strip_APA102)
-        lava_off_brightness = APA102_LAVA_OFF_BRIGHTNESS;
-    else
-        lava_off_brightness = WS2812_LAVA_OFF_BRIGHTNESS;
-
-
+    lava_off_brightness = APA102_LAVA_OFF_BRIGHTNESS;
 
     Lava LP;
     for(i = 0; i<LAVA_COUNT; i++){
@@ -837,14 +817,11 @@ bool tickParticles(){
 
 void tickConveyors(){
     int b, speed, n, i, ss, ee, led;
-    long m = 10000+millis();
+    unsigned long m = 10000 + millis();
     playerPositionModifier = 0;
     uint8_t conveyor_brightness;
 
-    if (user_settings.led_type == strip_APA102)
-        conveyor_brightness = APA102_CONVEYOR_BRIGHTNES;
-    else
-        conveyor_brightness = WS2812_CONVEYOR_BRIGHTNES;
+    conveyor_brightness = APA102_CONVEYOR_BRIGHTNES;
 
     int levels = 5; // brightness levels in conveyor
 
@@ -883,13 +860,13 @@ void tickBossKilled(long mm) // boss funeral
 
     if(stageStartTime+6500 > mm){
         gHue++;
-        fill_rainbow( leds, user_settings.led_count, gHue, 7); // FastLED's built in rainbow
+        fill_rainbow( leds, LED_COUNT, gHue, 7); // FastLED's built in rainbow
         if( random8() < 200) {  // add glitter
-            leds[ random16(user_settings.led_count) ] += CRGB::White;
+            leds[ random16(LED_COUNT) ] += CRGB::White;
         }
         SFXbosskilled();
     }else if(stageStartTime+7000 > mm){
-        int n = max(map(((mm-stageStartTime)), 5000, 5500, user_settings.led_count, 0), 0);
+        int n = max(map(((mm-stageStartTime)), 5000, 5500, LED_COUNT, 0), 0);
         for(int i = 0; i< n; i++){
             brightness = (sin(((i*10)+mm)/500.0)+1)*255;
             leds[i].setHSV(brightness, 255, 50);
@@ -900,7 +877,7 @@ void tickBossKilled(long mm) // boss funeral
     }
 }
 
-void tickDie(long mm) { // a short bright explosion...particles persist after it.
+void tickDie(unsigned long mm) { // a short bright explosion...particles persist after it.
     const int duration = 200; // milliseconds
     const int width = 10;     // half width of the explosion
 
@@ -928,7 +905,7 @@ void tickGameover(long mm) {
     if(stageStartTime+GAMEOVER_SPREAD_DURATION > mm) // Spread red from player position to top and bottom
     {
         // fill to top
-        int n = max(map(((mm-stageStartTime)), 0, GAMEOVER_SPREAD_DURATION, getLED(playerPosition), user_settings.led_count), 0);
+        int n = max(map(((mm-stageStartTime)), 0, GAMEOVER_SPREAD_DURATION, getLED(playerPosition), LED_COUNT), 0);
         for(int i = getLED(playerPosition); i<= n; i++){
             leds[i] = CRGB(255, 0, 0);
         }
@@ -941,7 +918,7 @@ void tickGameover(long mm) {
     }
     else if(stageStartTime+GAMEOVER_FADE_DURATION > mm)  // fade down to bottom and fade brightness
     {
-        int n = max(map(((mm-stageStartTime)), GAMEOVER_FADE_DURATION, GAMEOVER_SPREAD_DURATION, 0, user_settings.led_count), 0);
+        int n = max(map(((mm-stageStartTime)), GAMEOVER_FADE_DURATION, GAMEOVER_SPREAD_DURATION, 0, LED_COUNT), 0);
         brightness =  map(((mm-stageStartTime)), GAMEOVER_SPREAD_DURATION, GAMEOVER_FADE_DURATION, 255, 0);
 
         for(int i = 0; i<= n; i++){
@@ -955,13 +932,13 @@ void tickGameover(long mm) {
 void tickWin(long mm) {
     FastLED.clear();
     if(stageStartTime+WIN_FILL_DURATION > mm){
-        int n = max(map(((mm-stageStartTime)), 0, WIN_FILL_DURATION, user_settings.led_count, 0), 0);  // fill from top to bottom
-        for(int i = user_settings.led_count; i>= n; i--){
+        int n = max(map(((mm-stageStartTime)), 0, WIN_FILL_DURATION, LED_COUNT, 0), 0);  // fill from top to bottom
+        for(int i = LED_COUNT; i>= n; i--){
             leds[i] = CRGB(0, 255, 0);
         }
         SFXwin();
     }else if(stageStartTime+WIN_CLEAR_DURATION > mm){
-        int n = max(map(((mm-stageStartTime)), WIN_FILL_DURATION, WIN_CLEAR_DURATION, user_settings.led_count, 0), 0);  // clear from top to bottom
+        int n = max(map(((mm-stageStartTime)), WIN_FILL_DURATION, WIN_CLEAR_DURATION, LED_COUNT, 0), 0);  // clear from top to bottom
         for(int i = 0; i< n; i++){
             leds[i] = CRGB(0, 255, 0);
         }
@@ -1014,7 +991,7 @@ void drawAttack(){
 
 int getLED(int pos){
     // The world is 1000 pixels wide, this converts world units into an LED number
-    return constrain((int)map(pos, 0, VIRTUAL_LED_COUNT, 0, user_settings.led_count-1), 0, user_settings.led_count-1);
+    return constrain((int)map(pos, 0, VIRTUAL_LED_COUNT, 0, LED_COUNT-1), 0, LED_COUNT-1);
 }
 
 bool inLava(int pos){
@@ -1041,42 +1018,24 @@ void updateLives(){
     drawLives();
 }
 
-void save_game_stats(bool bossKill)
-{
-
-
-
-    user_settings.games_played += 1;
-    user_settings.total_points += score;
-    if (score > user_settings.high_score)
-        user_settings.high_score += score;
-    if (bossKill)
-        user_settings.boss_kills += 1;
-
-    show_game_stats();
-
-    settings_eeprom_write();
-}
-
 // ---------------------------------
 // --------- SCREENSAVER -----------
 // ---------------------------------
 void screenSaverTick(){
-    int n, b, c, i;
+    int n, c, i;
     long mm = millis();
     int mode = (mm/30000)%5;
 
     SFXcomplete(); // make sure there is not sound...play testing showed this to be a problem
 
-    for(i = 0; i<user_settings.led_count; i++){
+    for(i = 0; i<LED_COUNT; i++){
         leds[i].nscale8(250);
     }
     if(mode == 0){
         // Marching green <> orange
         n = (mm/250)%10;
-        b = 10+((sin(mm/500.00)+1)*20.00);
         c = 20+((sin(mm/5000.00)+1)*33);
-        for(i = 0; i<user_settings.led_count; i++){
+        for(i = 0; i<LED_COUNT; i++){
             if(i%10 == n){
                 leds[i] = CHSV( c, 255, 150);
             }
@@ -1084,7 +1043,7 @@ void screenSaverTick(){
     }else if(mode >= 1){
         // Random flashes
         randomSeed(mm);
-        for(i = 0; i<user_settings.led_count; i++){
+        for(i = 0; i<LED_COUNT; i++){
             if(random8(20) == 0){
                 leds[i] = CHSV( 25, 255, 100);
             }
@@ -1096,31 +1055,48 @@ void screenSaverTick(){
 // ----------- JOYSTICK ------------
 // ---------------------------------
 void getInput(){
-    // This is responsible for the player movement speed and attacking.
-    // You can replace it with anything you want that passes a -90>+90 value to joystickTilt
-    // and any value to joystickWobble that is greater than ATTACK_THRESHOLD (defined at start)
-    // For example you could use 3 momentary buttons:
-    // if(digitalRead(leftButtonPinNumber) == HIGH) joystickTilt = -90;
-    // if(digitalRead(rightButtonPinNumber) == HIGH) joystickTilt = 90;
-    // if(digitalRead(attackButtonPinNumber) == HIGH) joystickWobble = ATTACK_THRESHOLD;
-    int16_t ax, ay, az;
-    int16_t gx, gy, gz;
+//    // This is responsible for the player movement speed and attacking.
+//    // You can replace it with anything you want that passes a -90>+90 value to joystickTilt
+//    // and any value to joystickWobble that is greater than ATTACK_THRESHOLD (defined at start)
+//    // For example you could use 3 momentary buttons:
+//    // if(digitalRead(leftButtonPinNumber) == HIGH) joystickTilt = -90;
+//    // if(digitalRead(rightButtonPinNumber) == HIGH) joystickTilt = 90;
+//    // if(digitalRead(attackButtonPinNumber) == HIGH) joystickWobble = ATTACK_THRESHOLD;
+//    int16_t ax, ay, az;
+//    int16_t gx, gy, gz;
+//
+//    accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+//    int a = (JOYSTICK_ORIENTATION == 0?ax:(JOYSTICK_ORIENTATION == 1?ay:az))/166;
+//    int g = (JOYSTICK_ORIENTATION == 0?gx:(JOYSTICK_ORIENTATION == 1?gy:gz));
+//
+//    if(abs(a) < user_settings.joystick_deadzone) a = 0;
+//    if(a > 0) a -= user_settings.joystick_deadzone;
+//    if(a < 0) a += user_settings.joystick_deadzone;
+//    MPUAngleSamples.add(a);
+//    MPUWobbleSamples.add(g);
+//
+//    joystickTilt = MPUAngleSamples.getMedian();
+//    if(JOYSTICK_DIRECTION == 1) {
+//        joystickTilt = 0-joystickTilt;
+//    }
+//    joystickWobble = abs(MPUWobbleSamples.getHighest());
 
-    accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-    int a = (JOYSTICK_ORIENTATION == 0?ax:(JOYSTICK_ORIENTATION == 1?ay:az))/166;
-    int g = (JOYSTICK_ORIENTATION == 0?gx:(JOYSTICK_ORIENTATION == 1?gy:gz));
-
-    if(abs(a) < user_settings.joystick_deadzone) a = 0;
-    if(a > 0) a -= user_settings.joystick_deadzone;
-    if(a < 0) a += user_settings.joystick_deadzone;
-    MPUAngleSamples.add(a);
-    MPUWobbleSamples.add(g);
-
-    joystickTilt = MPUAngleSamples.getMedian();
-    if(JOYSTICK_DIRECTION == 1) {
-        joystickTilt = 0-joystickTilt;
+    if (!tof_measurement_exists) {
+        return; // nothing new
     }
-    joystickWobble = abs(MPUWobbleSamples.getHighest());
+    tof_measurement_exists = 0; // reset
+    uint8_t NewDataReady = 0;
+    uint8_t status = sensor_vl53l4cd_sat.VL53L4CD_CheckForDataReady(&NewDataReady);
+    if ((!status) && (NewDataReady != 0)) { // TODO: status checks really needed??
+        sensor_vl53l4cd_sat.VL53L4CD_ClearInterrupt(); // (Mandatory) Clear HW interrupt to restart measurements
+        // Read measured distance. RangeStatus = 0 means valid data
+        VL53L4CD_Result_t results;
+        sensor_vl53l4cd_sat.VL53L4CD_GetResult(&results);
+        int a = (int) (((float) results.distance_mm - 300) / 300 * 90);
+        MPUAngleSamples.add(a);
+        joystickTilt = MPUAngleSamples.getMedian();
+        Serial.println(a);
+    }
 }
 
 // ---------------------------------
@@ -1146,7 +1122,7 @@ void SFXFreqSweepWarble(int duration, int elapsedTime, int freqStart, int freqEn
     if (warble)
         warble = map(sin(millis()/20.0)*1000.0, -1000, 1000, 0, warble);
 
-    toneAC(freq + warble, user_settings.audio_volume);
+    toneAC(freq + warble, AUDIO_VOLUME);
 }
 
 /*
@@ -1163,10 +1139,8 @@ void SFXFreqSweepWarble(int duration, int elapsedTime, int freqStart, int freqEn
    
 
 */
-void SFXFreqSweepNoise(int duration, int elapsedTime, int freqStart, int freqEnd, uint8_t noiseFactor)
-{
+void SFXFreqSweepNoise(int duration, int elapsedTime, int freqStart, int freqEnd, uint8_t noiseFactor){
     int freq;
-
     if (elapsedTime > duration)
         freq = freqEnd;
     else
@@ -1175,7 +1149,7 @@ void SFXFreqSweepNoise(int duration, int elapsedTime, int freqStart, int freqEnd
     if (noiseFactor)
         noiseFactor = noiseFactor - random8(noiseFactor / 2);
 
-    toneAC(freq + noiseFactor, user_settings.audio_volume);
+    toneAC(freq + noiseFactor, AUDIO_VOLUME);
 }
 
 
@@ -1183,15 +1157,14 @@ void SFXtilt(int amount){
     int f = map(abs(amount), 0, 90, 80, 900)+random8(100);
     if(playerPositionModifier < 0) f -= 500;
     if(playerPositionModifier > 0) f += 200;
-    toneAC(f, min(min(abs(amount)/9, 5), user_settings.audio_volume));
-
+    toneAC(f, min(min(abs(amount)/9, 5), AUDIO_VOLUME));
 }
 void SFXattacking(){
     int freq = map(sin(millis()/2.0)*1000.0, -1000, 1000, 500, 600);
     if(random8(5)== 0){
         freq *= 3;
     }
-    toneAC(freq, user_settings.audio_volume);
+    toneAC(freq, AUDIO_VOLUME);
 }
 void SFXdead(){
     SFXFreqSweepNoise(1000, millis()-killTime, 1000, 10, 200);
@@ -1202,7 +1175,7 @@ void SFXgameover(){
 }
 
 void SFXkill(){
-    toneAC(2000, user_settings.audio_volume, 1000, true);
+    toneAC(2000, AUDIO_VOLUME, 1000, true);
 }
 void SFXwin(){
     SFXFreqSweepWarble(WIN_OFF_DURATION, millis()-stageStartTime, 40, 400, 20);
@@ -1233,10 +1206,4 @@ long map_constrain(long x, long in_min, long in_max, long out_min, long out_max)
     return map(x, in_min, in_max, out_min, out_max);
 
 
-}
-
-void showSetupInfo()
-{
-    Serial.print("\r\nTWANG VERSION: "); Serial.println(VERSION);
-    show_settings_menu();
 }
