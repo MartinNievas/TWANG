@@ -69,17 +69,19 @@
 unsigned long previousMillis = 0;           // Time of the last redraw
 int levelNumber = 0;
 
-int joystickTilt = 0;              // Stores the angle of the joystick
-int joystickWobble = 0;            // Stores the max amount of wobble
+const int TOF_NOTHING = -1;
+const int TOF_MAX = 900;
+int tofZeroPoint = TOF_NOTHING;
+int tofOffset = 0;
 int attack_width = DEFAULT_ATTACK_WIDTH;
 unsigned long attackMillis = 0;             // Time the attack started
 bool attacking = 0;                // Is the attack in progress?
+bool attackDone = false;
 
 uint8_t AUDIO_VOLUME = 10; // 0-10
 
 CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
-RunningMedian MPUAngleSamples = RunningMedian(3);
-RunningMedian MPUWobbleSamples = RunningMedian(5);
+RunningMedian MPUDistanceSamples = RunningMedian(3);
 
 #define DEV_I2C Wire
 #define SerialPort Serial
@@ -246,8 +248,9 @@ void loop() {
         unsigned long frameTimer = mm;
         previousMillis = mm;
 
-        if(joystickTilt < 90){ // FIXME
+        if(tofZeroPoint != TOF_NOTHING){ // we are active: hand is moving
             lastInputTime = mm;
+            attackDone = false; // reset
             if(stage == SCREENSAVER){
                 levelNumber = -1;
                 stageStartTime = mm;
@@ -261,10 +264,9 @@ void loop() {
         if(stage == SCREENSAVER){
             screenSaverTick();
         }else if(stage == STARTUP){
-            if (stageStartTime + STARTUP_FADE_DUR > mm)
+            if (stageStartTime + STARTUP_FADE_DUR > mm) {
                 tickStartup(mm);
-            else
-            {
+            } else {
                 SFXcomplete();
                 levelNumber = 0;
                 loadLevel();
@@ -272,22 +274,24 @@ void loop() {
         }else if(stage == PLAY){
             // PLAYING			
 
-            if(attacking && attackMillis+ATTACK_DURATION < mm) attacking = 0;
-
-            if (attacking)
-                SFXattacking();
-
-            // If not attacking, check if they should be
-            if(!attacking && joystickTilt < -80){
-                attackMillis = mm;
-                attacking = 1;
+            if(attacking && attackMillis+ATTACK_DURATION < mm) { // end attack
+                attacking = false;
+                attackDone = true;
             }
+            if (attacking) { // while attack in progress
+                SFXattacking();
+            }
+            if(!attacking && !attackDone && tofZeroPoint==TOF_NOTHING){ // start attack
+                attackMillis = mm;
+                attacking = true;
+            }
+
 
             // If still not attacking, move!
             playerPosition += playerPositionModifier;
             if(!attacking){
-                SFXtilt(joystickTilt);
-                int moveAmount = (joystickTilt/8.0);
+                SFXtilt(tofOffset / 3.0); // TODO solve differently based on MAX_PLAYER_SPEED
+                int moveAmount = (tofOffset / 25.0);
                 moveAmount = constrain(moveAmount, -MAX_PLAYER_SPEED, MAX_PLAYER_SPEED);
                 playerPosition -= moveAmount;
                 if(playerPosition < 0) playerPosition = 0;
@@ -1051,42 +1055,15 @@ void screenSaverTick(){
     }
 }
 
-// ---------------------------------
-// ----------- JOYSTICK ------------
-// ---------------------------------
 void getInput(){
-//    // This is responsible for the player movement speed and attacking.
-//    // You can replace it with anything you want that passes a -90>+90 value to joystickTilt
-//    // and any value to joystickWobble that is greater than ATTACK_THRESHOLD (defined at start)
-//    // For example you could use 3 momentary buttons:
-//    // if(digitalRead(leftButtonPinNumber) == HIGH) joystickTilt = -90;
-//    // if(digitalRead(rightButtonPinNumber) == HIGH) joystickTilt = 90;
-//    // if(digitalRead(attackButtonPinNumber) == HIGH) joystickWobble = ATTACK_THRESHOLD;
-//    int16_t ax, ay, az;
-//    int16_t gx, gy, gz;
-//
-//    accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
-//    int a = (JOYSTICK_ORIENTATION == 0?ax:(JOYSTICK_ORIENTATION == 1?ay:az))/166;
-//    int g = (JOYSTICK_ORIENTATION == 0?gx:(JOYSTICK_ORIENTATION == 1?gy:gz));
-//
-//    if(abs(a) < user_settings.joystick_deadzone) a = 0;
-//    if(a > 0) a -= user_settings.joystick_deadzone;
-//    if(a < 0) a += user_settings.joystick_deadzone;
-//    MPUAngleSamples.add(a);
-//    MPUWobbleSamples.add(g);
-//
-//    joystickTilt = MPUAngleSamples.getMedian();
-//    if(JOYSTICK_DIRECTION == 1) {
-//        joystickTilt = 0-joystickTilt;
-//    }
-//    joystickWobble = abs(MPUWobbleSamples.getHighest());
-
     if (!tof_measurement_exists) {
         return; // nothing new
     }
     tof_measurement_exists = false; // reset
     uint8_t NewDataReady = 0;
     uint8_t status = sensor_vl53l4cd_sat.VL53L4CD_CheckForDataReady(&NewDataReady);
+
+    char report[64];
     if ((!status) && (NewDataReady != 0)) { // TODO: status checks really needed??
         sensor_vl53l4cd_sat.VL53L4CD_ClearInterrupt(); // (Mandatory) Clear HW interrupt to restart measurements
 
@@ -1095,25 +1072,40 @@ void getInput(){
         sensor_vl53l4cd_sat.VL53L4CD_GetResult(&results);
 
         int dist_mm = (int) results.distance_mm;
-        int offset_mm = dist_mm - 300;
-        int a = offset_mm / 3;
-        MPUAngleSamples.add(a);
-        joystickTilt = MPUAngleSamples.getMedian();
+        MPUDistanceSamples.add(dist_mm);
+        dist_mm = (int) MPUDistanceSamples.getMedian();
 
-        char report[64];
-        snprintf(report, sizeof(report), "%5i mm / %5i sigma %5i mm: %3i deg\r\n",
-                 dist_mm,
-                 offset_mm,
-                 results.sigma_mm,
-                 a);
+        snprintf(report, sizeof(report), "dis %4i sig %3i %5i ",
+                 results.distance_mm, results.sigma_mm, dist_mm);
         SerialPort.print(report);
-    } else {
-        SerialPort.print(status);
-        SerialPort.print(" ");
-        SerialPort.print(NewDataReady);
-        SerialPort.println(" not ready");
-    }
 
+        if (dist_mm > TOF_MAX) { // "nothing" detected
+            tofZeroPoint = TOF_NOTHING;
+            tofOffset = 0;
+            SerialPort.println("OUT");
+        } else {
+            if (tofZeroPoint == TOF_NOTHING) { // hand entered the sensor
+                bool canUse = MPUDistanceSamples.getHighest() - MPUDistanceSamples.getLowest() < 100;
+                if (!canUse) { // too much noise
+                    SerialPort.println("SET?");
+                }
+                else { // use this
+                    tofZeroPoint = dist_mm;
+                    tofOffset = 0;
+                    SerialPort.println("SET!");
+                }
+
+            } else {
+                tofOffset = dist_mm - tofZeroPoint;
+                SerialPort.print("USE ");
+                SerialPort.println(tofOffset);
+            }
+        }
+    } else {
+        // TODO: consider no measurement error case which is equal to >TOF_MAX
+        // snprintf(report, sizeof(report), "ERROR sta %5i rdy %5i\r\n", status, NewDataReady);
+    }
+    // SerialPort.print(report);
 }
 
 // ---------------------------------
