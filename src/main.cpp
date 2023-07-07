@@ -78,14 +78,14 @@ bool attacking = 0;                // Is the attack in progress?
 uint8_t AUDIO_VOLUME = 10; // 0-10
 
 CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
-RunningMedian MPUAngleSamples = RunningMedian(5);
+RunningMedian MPUAngleSamples = RunningMedian(3);
 RunningMedian MPUWobbleSamples = RunningMedian(5);
 
 #define DEV_I2C Wire
 #define SerialPort Serial
 #define interruptPin PIN2
 VL53L4CD sensor_vl53l4cd_sat(&DEV_I2C, PIN_A1);
-volatile int tof_measurement_exists = 0;
+volatile bool tof_measurement_exists = false;
 
 enum stages {
     STARTUP,
@@ -197,7 +197,7 @@ long map_constrain(long x, long in_min, long in_max, long out_min, long out_max)
 void updateLives();
 
 void tof_interrupt() {
-    tof_measurement_exists = 1;
+    tof_measurement_exists = true;
 }
 
 void setup() {
@@ -1084,19 +1084,36 @@ void getInput(){
     if (!tof_measurement_exists) {
         return; // nothing new
     }
-    tof_measurement_exists = 0; // reset
+    tof_measurement_exists = false; // reset
     uint8_t NewDataReady = 0;
     uint8_t status = sensor_vl53l4cd_sat.VL53L4CD_CheckForDataReady(&NewDataReady);
     if ((!status) && (NewDataReady != 0)) { // TODO: status checks really needed??
         sensor_vl53l4cd_sat.VL53L4CD_ClearInterrupt(); // (Mandatory) Clear HW interrupt to restart measurements
+
         // Read measured distance. RangeStatus = 0 means valid data
         VL53L4CD_Result_t results;
         sensor_vl53l4cd_sat.VL53L4CD_GetResult(&results);
-        int a = (int) (((float) results.distance_mm - 300) / 300 * 90);
+
+        int dist_mm = (int) results.distance_mm;
+        int offset_mm = dist_mm - 300;
+        int a = offset_mm / 3;
         MPUAngleSamples.add(a);
         joystickTilt = MPUAngleSamples.getMedian();
-        Serial.println(a);
+
+        char report[64];
+        snprintf(report, sizeof(report), "%5i mm / %5i sigma %5i mm: %3i deg\r\n",
+                 dist_mm,
+                 offset_mm,
+                 results.sigma_mm,
+                 a);
+        SerialPort.print(report);
+    } else {
+        SerialPort.print(status);
+        SerialPort.print(" ");
+        SerialPort.print(NewDataReady);
+        SerialPort.println(" not ready");
     }
+
 }
 
 // ---------------------------------
