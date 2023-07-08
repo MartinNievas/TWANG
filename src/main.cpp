@@ -8,16 +8,7 @@
 	Based on original code by Critters/TWANG	
 	
 	https://github.com/Critters/TWANG
-	
-		
-	
-	Changes on this revision
-	- At startup, if any EEPROM value is out of range, reset them all 
-	- LED Strip type can now be set by serial port
-	- LED Count can now be set by serial port
-	
-	
-	
+
 */
 #define VERSION "2023-06-25"
 
@@ -25,7 +16,6 @@
 #include "FastLED.h"
 #include "Wire.h"
 #include "toneAC.h"
-//#include "iSin.h"
 #include "RunningMedian.h"
 #include <vl53l4cd_class.h>
 
@@ -50,16 +40,13 @@
 #define APA102_CONVEYOR_BRIGHTNES 8
 #define APA102_LAVA_OFF_BRIGHTNESS 4
 
-#define MAX_PLAYER_SPEED    10     // Max move speed of the player
-#define LIVES_PER_LEVEL		3
-#define DEFAULT_ATTACK_WIDTH 70  // Width of the wobble attack, world is 1000 wide
-#define ATTACK_DURATION     500    // Duration of a wobble attack (ms)
-#define BOSS_WIDTH          40
+#define MAX_PLAYER_SPEED     10     // Max move speed of the player
+#define LIVES_PER_LEVEL		 3
+#define DEFAULT_ATTACK_WIDTH 100  // Width of the wobble attack, world is 1000 wide
+#define ATTACK_DURATION      500    // Duration of a wobble attack (ms)
+#define BOSS_WIDTH           40
 
 #define SCREENSAVER_TIMEOUT              30000  // time until screen saver
-
-#define TOF_MIDDLE_MM = 300
-#define TOF_DEADZONE_MM = 600
 
 #define MIN_REDRAW_INTERVAL  16    // Min redraw interval (ms) 33 = 30fps / 16 = 63fps
 #define USE_GRAVITY          0     // 0/1 use gravity (LED strip going up wall)
@@ -69,14 +56,16 @@
 unsigned long previousMillis = 0;           // Time of the last redraw
 int levelNumber = 0;
 
-const int TOF_NOTHING = -1;
-const int TOF_MAX = 900;
-int tofZeroPoint = TOF_NOTHING;
-int tofOffset = 0;
+const int TOF_ZERO = 450;   // a fixed zero-point or TOF_RANGE to set it dynamically [mm]
+const int TOF_RANGE = 300;  // max range from center until reaching max speed [mm]
+const int TOF_NOTHING = -999; // "distance" reported when out of range
+const int TOF_MAX = 900;    // minimum distance considered out of range [mm]
+int tofOffset = TOF_NOTHING;
+
 int attack_width = DEFAULT_ATTACK_WIDTH;
 unsigned long attackMillis = 0;             // Time the attack started
 bool attacking = 0;                // Is the attack in progress?
-bool attackDone = false;
+bool attackAvailable = false;
 
 uint8_t AUDIO_VOLUME = 10; // 0-10
 
@@ -104,7 +93,7 @@ unsigned long stageStartTime;               // Stores the time the stage changed
 unsigned long lastInputTime = 0;
 int playerPosition;                // Stores the player position
 int playerPositionModifier;        // +/- adjustment to player position
-long killTime;
+unsigned long killTime;
 uint8_t lives;
 bool lastLevel = false;
 
@@ -171,11 +160,11 @@ void tickEnemies();
 void tickBoss();
 void drawPlayer();
 void drawExit();
-void tickSpawners();
-void tickLava();
+void tickSpawners(unsigned long mm);
+void tickLava(unsigned long mm);
 bool tickParticles();
-void tickConveyors();
-void tickBossKilled(long mm);
+void tickConveyors(unsigned long mm);
+void tickBossKilled(unsigned long mm);
 void tickDie(unsigned long mm);
 void tickGameover(long mm);
 void tickWin(long mm);
@@ -239,18 +228,66 @@ void setup() {
     lives = LIVES_PER_LEVEL;
 }
 
+void loopPlay(unsigned long mm) {
+    if (attacking) {
+        if (attackMillis + ATTACK_DURATION < mm) { // end attack
+            attacking = false;
+        } else { // while attack in progress
+            SFXattacking();
+        }
+    } else { // not attacking currently
+        if (attackAvailable && tofOffset == TOF_NOTHING) { // start attack
+            attackMillis = mm;
+            attacking = true;
+            attackAvailable = false;
+        } else { // If still not attacking, move!
+            playerPosition += playerPositionModifier; // forced move by elevators
+            if (tofOffset == TOF_NOTHING) {
+                SFXcomplete();
+            } else { // some input by the player exists
+                attackAvailable = true;
+                SFXtilt(tofOffset);
+                int moveAmount = tofOffset * MAX_PLAYER_SPEED / TOF_RANGE;
+                // not needed: moveAmount = constrain(moveAmount, -MAX_PLAYER_SPEED, MAX_PLAYER_SPEED);
+                playerPosition -= moveAmount;
+                if(playerPosition < 0) {
+                    playerPosition = 0;
+                }
+                if (playerPosition >= VIRTUAL_LED_COUNT) { // end of strip reached
+                    if (boss.Alive()) {
+                        // stop player from leaving if boss is alive
+                        playerPosition = VIRTUAL_LED_COUNT - 1;
+                    } else { // Reached exit!
+                        levelComplete();
+                        return;
+                    }
+                }
+            }
+            if(inLava(playerPosition)){
+                die();
+            }
+        }
+    }
+    FastLED.clear();
+    tickConveyors(mm);
+    tickSpawners(mm);
+    tickBoss();
+    tickLava(mm);
+    tickEnemies();
+    drawPlayer();
+    drawAttack();
+    drawExit();
+}
+
 void loop() {
-    unsigned long mm = millis();
+    auto mm = millis();
 
     if (mm - previousMillis >= MIN_REDRAW_INTERVAL) {
         getInput();
-
-        unsigned long frameTimer = mm;
         previousMillis = mm;
 
-        if(tofZeroPoint != TOF_NOTHING){ // we are active: hand is moving
+        if(tofOffset != TOF_NOTHING){ // we are active: hand is moving
             lastInputTime = mm;
-            attackDone = false; // reset
             if(stage == SCREENSAVER){
                 levelNumber = -1;
                 stageStartTime = mm;
@@ -272,54 +309,7 @@ void loop() {
                 loadLevel();
             }
         }else if(stage == PLAY){
-            // PLAYING			
-
-            if(attacking && attackMillis+ATTACK_DURATION < mm) { // end attack
-                attacking = false;
-                attackDone = true;
-            }
-            if (attacking) { // while attack in progress
-                SFXattacking();
-            }
-            if(!attacking && !attackDone && tofZeroPoint==TOF_NOTHING){ // start attack
-                attackMillis = mm;
-                attacking = true;
-            }
-
-
-            // If still not attacking, move!
-            playerPosition += playerPositionModifier;
-            if(!attacking){
-                SFXtilt(tofOffset / 3.0); // TODO solve differently based on MAX_PLAYER_SPEED
-                int moveAmount = (tofOffset / 25.0);
-                moveAmount = constrain(moveAmount, -MAX_PLAYER_SPEED, MAX_PLAYER_SPEED);
-                playerPosition -= moveAmount;
-                if(playerPosition < 0) playerPosition = 0;
-                // stop player from leaving if boss is alive
-                if (boss.Alive() && playerPosition >= VIRTUAL_LED_COUNT) // move player back
-                    playerPosition = VIRTUAL_LED_COUNT - 1;
-
-                if(playerPosition >= VIRTUAL_LED_COUNT && !boss.Alive()) {
-                    // Reached exit!
-                    levelComplete();
-                    return;
-                }
-            }
-
-            if(inLava(playerPosition)){
-                die();
-            }
-
-            // Ticks and draw calls
-            FastLED.clear();
-            tickConveyors();
-            tickSpawners();
-            tickBoss();
-            tickLava();
-            tickEnemies();
-            drawPlayer();
-            drawAttack();
-            drawExit();
+            loopPlay(mm);
         }else if(stage == DEAD){
             // DEAD			
             SFXdead();
@@ -423,7 +413,7 @@ void loadLevel(){
     */
     switch(levelNumber){
         case 0: // basic introduction 
-            playerPosition = 200;
+            playerPosition = 400;
             spawnEnemy(1, 0, 0, 0);
             break;
         case 1:
@@ -460,12 +450,12 @@ void loadLevel(){
             break;
         case 6:
             // Conveyor
-            spawnConveyor(100, 600, -6);
+            spawnConveyor(100, 600, -4);
             spawnEnemy(800, 0, 0, 0);
             break;
         case 7:
             // Conveyor of enemies
-            spawnConveyor(50, 1000, 6);
+            spawnConveyor(50, 1000, 4);
             spawnEnemy(300, 0, 0, 0);
             spawnEnemy(400, 0, 0, 0);
             spawnEnemy(500, 0, 0, 0);
@@ -503,7 +493,7 @@ void loadLevel(){
             spawnEnemy(500, 1, 5, 250);
             spawnPool[0].Spawn(1000, 5500, 4, 0, 3000);
             spawnPool[1].Spawn(0, 5500, 5, 1, 10000);
-            spawnConveyor(100, 900, -4);
+            spawnConveyor(100, 900, -2);
             break;
         case 14:
             // Sin enemy #2 (fast conveyor)
@@ -512,7 +502,7 @@ void loadLevel(){
             spawnEnemy(500, 1, 5, 250);
             spawnPool[0].Spawn(1000, 3000, 4, 0, 3000);
             spawnPool[1].Spawn(0, 5500, 5, 1, 10000);
-            spawnConveyor(100, 900, -6);
+            spawnConveyor(100, 900, -4);
             break;
         case 15: // (don't edit last level)
             // Boss this should always be the last level			
@@ -614,13 +604,8 @@ void nextLevel(){
     loadLevel();
 }
 
-void gameOver(){
-
-    levelNumber = 0;
-    loadLevel();
-}
-
 void die(){
+    attackAvailable = false;
     if(levelNumber > 0)
         lives--;
 
@@ -676,28 +661,28 @@ void tickStartup(unsigned long mm)
 }
 
 void tickEnemies(){
-    for(int i = 0; i<ENEMY_COUNT; i++){
-        if(enemyPool[i].Alive()){
-            enemyPool[i].Tick();
+    for(auto & i : enemyPool){
+        if(i.Alive()){
+            i.Tick();
             // Hit attack?
             if(attacking){
-                if(enemyPool[i]._pos > playerPosition-(attack_width/2) && enemyPool[i]._pos < playerPosition+(attack_width/2)){
-                    enemyPool[i].Kill();
+                if(i._pos > playerPosition-(attack_width/2) && i._pos < playerPosition+(attack_width/2)){
+                    i.Kill();
                     SFXkill();
                 }
             }
-            if(inLava(enemyPool[i]._pos)){
-                enemyPool[i].Kill();
+            if(inLava(i._pos)){
+                i.Kill();
                 SFXkill();
             }
             // Draw (if still alive)
-            if(enemyPool[i].Alive()) {
-                leds[getLED(enemyPool[i]._pos)] = CRGB(255, 0, 0);
+            if(i.Alive()) {
+                leds[getLED(i._pos)] = CRGB(255, 0, 0);
             }
             // Hit player?
             if(
-                    (enemyPool[i].playerSide == 1 && enemyPool[i]._pos <= playerPosition) ||
-                    (enemyPool[i].playerSide == -1 && enemyPool[i]._pos >= playerPosition)
+                    (i.playerSide == 1 && i._pos <= playerPosition) ||
+                    (i.playerSide == -1 && i._pos >= playerPosition)
                     ){
                 die();
                 return;
@@ -738,7 +723,14 @@ void tickBoss(){
 }
 
 void drawPlayer(){
-    leds[getLED(playerPosition)] = CRGB(0, 255, 0);
+    uint8_t color1 = 255;
+    uint8_t color2 = 0;
+    if (tofOffset == TOF_NOTHING) {
+        color1 = 100; // less green if "inactive"
+    } else {
+        color2 = (uint8_t) map(abs(tofOffset), 0, TOF_RANGE, 0, 30);
+    }
+    leds[getLED(playerPosition)] = CRGB(color2, color1, color2);
 }
 
 void drawExit(){
@@ -747,38 +739,36 @@ void drawExit(){
     }
 }
 
-void tickSpawners(){
-    long mm = millis();
-    for(int s = 0; s<SPAWN_COUNT; s++){
-        if(spawnPool[s].Alive() && spawnPool[s]._activate < mm){
-            if(spawnPool[s]._lastSpawned + spawnPool[s]._rate < mm || spawnPool[s]._lastSpawned == 0){
-                spawnEnemy(spawnPool[s]._pos, spawnPool[s]._dir, spawnPool[s]._speed, 0);
-                spawnPool[s]._lastSpawned = mm;
+void tickSpawners(unsigned long mm){
+    for(auto & s : spawnPool){
+        if(s.Alive() && s._activate < mm){
+            if(s._lastSpawned + s._rate < mm || s._lastSpawned == 0){
+                if (abs(playerPosition - s._pos) > 50) {
+                    // be nice and don't surprise the player if she's very close
+                    spawnEnemy(s._pos, s._dir, s._speed, 0);
+                }
+                s._lastSpawned = mm;
             }
         }
     }
 }
 
-void tickLava(){
-    int A, B, p, i, brightness, flicker;
-    unsigned long mm = millis();
-    uint8_t lava_off_brightness;
-
-    lava_off_brightness = APA102_LAVA_OFF_BRIGHTNESS;
-
+void tickLava(unsigned long mm){
+    uint8_t lava_off_brightness = APA102_LAVA_OFF_BRIGHTNESS;
     Lava LP;
-    for(i = 0; i<LAVA_COUNT; i++){
-        LP = lavaPool[i];
+    for(auto & i : lavaPool){
+        LP = i;
         if(LP.Alive()){
-            A = getLED(LP._left);
-            B = getLED(LP._right);
+            int A = getLED(LP._left);
+            int B = getLED(LP._right);
+            int p;
             if(LP._state == Lava::OFF){
                 if(LP._lastOn + LP._offtime < mm){
                     LP._state = Lava::ON;
                     LP._lastOn = mm;
                 }
                 for(p = A; p<= B; p++){
-                    flicker = random8(lava_off_brightness);
+                    auto flicker = random8(lava_off_brightness);
                     leds[p] = CRGB(lava_off_brightness+flicker, (lava_off_brightness+flicker)/1.5, 0);
                 }
             }else if(LP._state == Lava::ON){
@@ -794,66 +784,58 @@ void tickLava(){
                 }
             }
         }
-        lavaPool[i] = LP;
+        i = LP;
     }
 }
 
 bool tickParticles(){
     bool stillActive = false;
     uint8_t brightness;
-    for(int p = 0; p < PARTICLE_COUNT; p++){
-        if(particlePool[p].Alive()){
-            particlePool[p].Tick(USE_GRAVITY);
-
-            if (particlePool[p]._power < 5)
-            {
-                brightness = (5 - particlePool[p]._power) * 10;
-                leds[getLED(particlePool[p]._pos)] += CRGB(brightness, brightness/2, brightness/2);\
-			}
-            else
-                leds[getLED(particlePool[p]._pos)] += CRGB(particlePool[p]._power, 0, 0);\
-
+    for(auto & p : particlePool){
+        if(p.Alive()){
+            p.Tick(USE_GRAVITY);
+            if (p._power < 5){
+                brightness = (5 - p._power) * 10;
+                leds[getLED(p._pos)] += CRGB(brightness, brightness/2, brightness/2);\
+			} else {
+                leds[getLED(p._pos)] += CRGB(p._power, 0, 0);\
+            }
             stillActive = true;
         }
     }
     return stillActive;
 }
 
-void tickConveyors(){
-    int b, speed, n, i, ss, ee, led;
-    unsigned long m = 10000 + millis();
+void tickConveyors(unsigned long mm){
+    int b, speed, n, ss, ee;
+    unsigned long m = 10000 + mm;
     playerPositionModifier = 0;
     uint8_t conveyor_brightness;
-
     conveyor_brightness = APA102_CONVEYOR_BRIGHTNES;
-
     int levels = 5; // brightness levels in conveyor
-
-
-    for(i = 0; i<CONVEYOR_COUNT; i++){
-        if(conveyorPool[i]._alive){
-            speed = constrain(conveyorPool[i]._speed, -MAX_PLAYER_SPEED+1, MAX_PLAYER_SPEED-1);
-            ss = getLED(conveyorPool[i]._startPoint);
-            ee = getLED(conveyorPool[i]._endPoint);
-            for(led = ss; led<ee; led++){
-
+    for(auto & i : conveyorPool){
+        if(i._alive){
+            speed = constrain(i._speed, -MAX_PLAYER_SPEED+1, MAX_PLAYER_SPEED-1);
+            ss = getLED(i._startPoint);
+            ee = getLED(i._endPoint);
+            for(int led = ss; led<ee; led++){
                 n = (-led + (m/100)) % levels;
-                if(speed < 0)
+                if(speed < 0) {
                     n = (led + (m/100)) % levels;
-
+                }
                 b = map(n, 5, 0, 0, conveyor_brightness);
-                if(b > 0)
+                if(b > 0) {
                     leds[led] = CRGB(0, 0, b);
+                }
             }
-
-            if(playerPosition > conveyorPool[i]._startPoint && playerPosition < conveyorPool[i]._endPoint){
+            if(playerPosition > i._startPoint && playerPosition < i._endPoint){
                 playerPositionModifier = speed;
             }
         }
     }
 }
 
-void tickBossKilled(long mm) // boss funeral
+void tickBossKilled(unsigned long mm) // boss funeral
 {
     static uint8_t gHue = 0;
 
@@ -1064,14 +1046,15 @@ void getInput(){
     uint8_t status = sensor_vl53l4cd_sat.VL53L4CD_CheckForDataReady(&NewDataReady);
 
     char report[64];
-    if ((!status) && (NewDataReady != 0)) { // TODO: status checks really needed??
+    // TODO: consider the case where there is no measurement because no hand
+    if ((!status) && (NewDataReady != 0)) {
         sensor_vl53l4cd_sat.VL53L4CD_ClearInterrupt(); // (Mandatory) Clear HW interrupt to restart measurements
 
         // Read measured distance. RangeStatus = 0 means valid data
         VL53L4CD_Result_t results;
         sensor_vl53l4cd_sat.VL53L4CD_GetResult(&results);
 
-        int dist_mm = (int) results.distance_mm;
+        auto dist_mm = (int) results.distance_mm;
         MPUDistanceSamples.add(dist_mm);
         dist_mm = (int) MPUDistanceSamples.getMedian();
 
@@ -1080,32 +1063,24 @@ void getInput(){
         SerialPort.print(report);
 
         if (dist_mm > TOF_MAX) { // "nothing" detected
-            tofZeroPoint = TOF_NOTHING;
-            tofOffset = 0;
+            tofOffset = TOF_NOTHING;
             SerialPort.println("OUT");
         } else {
-            if (tofZeroPoint == TOF_NOTHING) { // hand entered the sensor
-                bool canUse = MPUDistanceSamples.getHighest() - MPUDistanceSamples.getLowest() < 100;
-                if (!canUse) { // too much noise
-                    SerialPort.println("SET?");
-                }
-                else { // use this
-                    tofZeroPoint = dist_mm;
-                    tofOffset = 0;
-                    SerialPort.println("SET!");
-                }
-
-            } else {
-                tofOffset = dist_mm - tofZeroPoint;
+            bool updateOffset = true;
+            if (tofOffset == TOF_NOTHING) { // hand entered the sensor
+                // wait until there is less noise
+                updateOffset = MPUDistanceSamples.getHighest() - MPUDistanceSamples.getLowest() < 100;
+            }
+            if (updateOffset) {
+                tofOffset = dist_mm - TOF_ZERO;
+                tofOffset = constrain(tofOffset, -TOF_RANGE, TOF_RANGE);
                 SerialPort.print("USE ");
                 SerialPort.println(tofOffset);
+            } else {
+                SerialPort.println("NOK");
             }
         }
-    } else {
-        // TODO: consider no measurement error case which is equal to >TOF_MAX
-        // snprintf(report, sizeof(report), "ERROR sta %5i rdy %5i\r\n", status, NewDataReady);
     }
-    // SerialPort.print(report);
 }
 
 // ---------------------------------
@@ -1161,13 +1136,13 @@ void SFXFreqSweepNoise(int duration, int elapsedTime, int freqStart, int freqEnd
     toneAC(freq + noiseFactor, AUDIO_VOLUME);
 }
 
-
 void SFXtilt(int amount){
-    int f = map(abs(amount), 0, 90, 80, 900)+random8(100);
+    auto f = map(abs(amount), 0, TOF_RANGE, 300, 900) + random8(80);
     if(playerPositionModifier < 0) f -= 500;
     if(playerPositionModifier > 0) f += 200;
     toneAC(f, min(min(abs(amount)/9, 5), AUDIO_VOLUME));
 }
+
 void SFXattacking(){
     int freq = map(sin(millis()/2.0)*1000.0, -1000, 1000, 500, 600);
     if(random8(5)== 0){
@@ -1190,8 +1165,7 @@ void SFXwin(){
     SFXFreqSweepWarble(WIN_OFF_DURATION, millis()-stageStartTime, 40, 400, 20);
 }
 
-void SFXbosskilled()
-{
+void SFXbosskilled(){
     SFXFreqSweepWarble(7000, millis()-stageStartTime, 75, 1100, 60);
 }
 

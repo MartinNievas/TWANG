@@ -19,8 +19,8 @@ class Spawner
     int _rate;
     int _speed;
     int _dir;
-    long _lastSpawned;
-    long _activate;
+    unsigned long _lastSpawned;
+    unsigned long _activate;
   private:
     int _alive;
 };
@@ -30,7 +30,7 @@ void Spawner::Spawn(int pos, int rate, int speed, int dir, long activate){
     _rate = rate;
     _speed = speed;
     _dir = dir;
-    _activate = millis()+activate;
+    _activate = millis() + activate;
     _alive = 1;
 }
 
