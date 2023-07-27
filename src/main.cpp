@@ -41,7 +41,7 @@
 #define APA102_LAVA_OFF_BRIGHTNESS 4
 
 #define MAX_PLAYER_SPEED     10     // Max move speed of the player
-#define LIVES_PER_LEVEL		 3
+#define LIVES_PER_LEVEL		 10
 #define DEFAULT_ATTACK_WIDTH 100  // Width of the wobble attack, world is 1000 wide
 #define ATTACK_DURATION      500    // Duration of a wobble attack (ms)
 #define BOSS_WIDTH           40
@@ -74,9 +74,7 @@ RunningMedian MPUDistanceSamples = RunningMedian(3);
 
 #define DEV_I2C Wire
 #define SerialPort Serial
-#define interruptPin PIN2
 VL53L4CD sensor_vl53l4cd_sat(&DEV_I2C, PIN_A1);
-volatile unsigned int tof_measurement_exists = 0;
 
 enum stages {
     STARTUP,
@@ -187,21 +185,13 @@ void SFXcomplete();
 long map_constrain(long x, long in_min, long in_max, long out_min, long out_max);
 void updateLives();
 
-void tof_interrupt() {
-    auto x = tof_measurement_exists;
-    tof_measurement_exists = x + 1;
-}
-
 void tof_initialize() {
-    pinMode(interruptPin, INPUT_PULLUP);
-    attachInterrupt(interruptPin, tof_interrupt, FALLING);
-
     DEV_I2C.begin(); // Initialize I2C bus.
     auto status = VL53L4CD_ERROR_NONE;
     status |= sensor_vl53l4cd_sat.begin(); // Configure VL53L4CD satellite component.
     sensor_vl53l4cd_sat.VL53L4CD_Off(); // Switch off VL53L4CD satellite component.
     status |= sensor_vl53l4cd_sat.InitSensor(); //Initialize VL53L4CD satellite component.
-    status |= sensor_vl53l4cd_sat.VL53L4CD_SetRangeTiming(200, 0);
+    status |= sensor_vl53l4cd_sat.VL53L4CD_SetRangeTiming(48, 0);
     status |= sensor_vl53l4cd_sat.VL53L4CD_StartRanging(); // Start Measurements
     if (status != VL53L4CD_ERROR_NONE) {
         Serial.print("VL53L4CD initialization issue: ");
@@ -427,17 +417,17 @@ void loadLevel(){
             break;
         case 1:
             // Slow moving enemy			
-            spawnEnemy(900, 0, 1, 0);
+            spawnEnemy(950, 0, 1, 0);
             break;
         case 2:
-            // Spawning enemies at exit every 2 seconds
-            spawnPool[0].Spawn(1000, 3000, 2, 0, 0);
+            // Spawning enemies at exit every X seconds
+            spawnPool[0].Spawn(900, 3000, 2, 0, 0);
             break;
         case 3:
             // Lava intro
             spawnLava(400, 490, 2000, 2000, 0, Lava::OFF);
             spawnEnemy(350, 0, 1, 0);
-            spawnPool[0].Spawn(1000, 5500, 3, 0, 0);
+            spawnPool[0].Spawn(900, 5500, 3, 0, 0);
 
             break;
         case 4:
@@ -449,13 +439,10 @@ void loadLevel(){
             // Sin enemy swarm
             spawnEnemy(700, 1, 7, 275);
             spawnEnemy(500, 1, 5, 250);
-
             spawnEnemy(600, 1, 7, 200);
             spawnEnemy(800, 1, 5, 350);
-
             spawnEnemy(400, 1, 7, 150);
             spawnEnemy(450, 1, 5, 400);
-
             break;
         case 6:
             // Conveyor
@@ -473,7 +460,7 @@ void loadLevel(){
             spawnEnemy(800, 0, 0, 0);
             spawnEnemy(900, 0, 0, 0);
             break;
-        case 8:   // spawn train;
+        case 8:   // spawn train
             spawnPool[0].Spawn(900, 1300, 2, 0, 0);
             break;
         case 9:   // spawn train skinny attack width;
@@ -749,10 +736,16 @@ void drawExit(){
 }
 
 void tickSpawners(unsigned long mm){
+    unsigned long fadeInMs = 500;
     for(auto & s : spawnPool){
         if(s.Alive() && s._activate < mm){
-            if(s._lastSpawned + s._rate < mm || s._lastSpawned == 0){
-                if (abs(playerPosition - s._pos) > 50) {
+            auto nextSpawnAt = s._lastSpawned + s._rate;
+            if(nextSpawnAt - fadeInMs < mm) { // spawn soon!
+                uint8_t x = 100 - (nextSpawnAt - mm) / 5;
+                leds[getLED(s._pos)] = CRGB(2 * x, x, 0);
+            }
+            if(nextSpawnAt < mm || s._lastSpawned == 0){
+                if (abs(playerPosition - s._pos) > 80) {
                     // be nice and don't surprise the player if she's very close
                     spawnEnemy(s._pos, s._dir, s._speed, 0);
                 }
@@ -1047,15 +1040,13 @@ void screenSaverTick(){
 }
 
 void getInput(){
-    if (tof_measurement_exists == 0) {
-        return; // nothing new
-    }
     uint8_t NewDataReady = 0;
-    uint8_t status = sensor_vl53l4cd_sat.VL53L4CD_CheckForDataReady(&NewDataReady);
+    auto status = sensor_vl53l4cd_sat.VL53L4CD_CheckForDataReady(&NewDataReady);
 
     char report[64];
     // TODO: consider the case where there is no measurement because no hand
     if ((!status) && (NewDataReady != 0)) {
+        sensor_vl53l4cd_sat.VL53L4CD_ClearInterrupt(); // (Mandatory) Clear HW interrupt to restart measurements
 
         // Read measured distance. RangeStatus = 0 means valid data
         VL53L4CD_Result_t results;
@@ -1065,18 +1056,18 @@ void getInput(){
         MPUDistanceSamples.add(dist_mm);
         dist_mm = (int) MPUDistanceSamples.getMedian();
 
-        snprintf(report, sizeof(report), "dis %4i sig %3i %5i ",
+        snprintf(report, sizeof(report), "%4imm ~%3i ->%4i",
                  results.distance_mm, results.sigma_mm, dist_mm);
         SerialPort.print(report);
 
-        if (results.sigma_mm > 10) {
-            SerialPort.print("??? ");
+        if (results.sigma_mm > 20 || results.distance_mm==0) {
+            SerialPort.print(" ???");
             dist_mm = 999;
         }
 
         if (dist_mm > TOF_MAX) { // "nothing" detected
             tofOffset = TOF_NOTHING;
-            SerialPort.println("OUT");
+            SerialPort.println(" OUT");
         } else {
             bool updateOffset = true;
             if (tofOffset == TOF_NOTHING) { // hand entered the sensor
@@ -1086,20 +1077,17 @@ void getInput(){
             if (updateOffset) {
                 tofOffset = dist_mm - TOF_ZERO;
                 tofOffset = constrain(tofOffset, -TOF_RANGE, TOF_RANGE);
-                SerialPort.print("USE ");
+                SerialPort.print(" USE ");
                 SerialPort.println(tofOffset);
             } else {
-                SerialPort.println("NOK");
+                SerialPort.println(" NOK");
             }
         }
     } else {
-        snprintf(report, sizeof(report), "NOK %4i xxx %3i %2i",
-                 status, NewDataReady, tof_measurement_exists);
-        SerialPort.println(report);
+        //snprintf(report, sizeof(report), "NOK %4i xxx %3i %2i",
+        //         status, NewDataReady, tof_measurement_exists);
+        //SerialPort.println(report);
     }
-
-    tof_measurement_exists = 0; // reset
-    sensor_vl53l4cd_sat.VL53L4CD_ClearInterrupt(); // (Mandatory) Clear HW interrupt to restart measurements
 }
 
 // ---------------------------------
