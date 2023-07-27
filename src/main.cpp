@@ -34,7 +34,7 @@
 #define LED_DATA_PIN             3
 #define LED_CLOCK_PIN            13
 #define VIRTUAL_LED_COUNT 1000
-#define LED_COUNT 144
+#define LED_COUNT 144 * 2 - 5
 #define LED_BRIGHTNESS 150
 
 #define APA102_CONVEYOR_BRIGHTNES 8
@@ -49,7 +49,7 @@
 #define SCREENSAVER_TIMEOUT              30000  // time until screen saver
 
 #define MIN_REDRAW_INTERVAL  16    // Min redraw interval (ms) 33 = 30fps / 16 = 63fps
-#define USE_GRAVITY          0     // 0/1 use gravity (LED strip going up wall)
+#define USE_GRAVITY          1     // 0/1 use gravity (LED strip going up wall)
 #define BEND_POINT           750   // 0/1000 point at which the LED strip goes up the wall
 //#define USE_LIFELEDS  // uncomment this to make Life LEDs available (not used in the B. Dring enclosure)
 
@@ -67,7 +67,7 @@ unsigned long attackMillis = 0;             // Time the attack started
 bool attacking = 0;                // Is the attack in progress?
 bool attackAvailable = false;
 
-uint8_t AUDIO_VOLUME = 10; // 0-10
+uint8_t AUDIO_VOLUME = 1; // 0-10
 
 CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
 RunningMedian MPUDistanceSamples = RunningMedian(3);
@@ -76,7 +76,7 @@ RunningMedian MPUDistanceSamples = RunningMedian(3);
 #define SerialPort Serial
 #define interruptPin PIN2
 VL53L4CD sensor_vl53l4cd_sat(&DEV_I2C, PIN_A1);
-volatile bool tof_measurement_exists = false;
+volatile unsigned int tof_measurement_exists = 0;
 
 enum stages {
     STARTUP,
@@ -188,27 +188,36 @@ long map_constrain(long x, long in_min, long in_max, long out_min, long out_max)
 void updateLives();
 
 void tof_interrupt() {
-    tof_measurement_exists = true;
+    auto x = tof_measurement_exists;
+    tof_measurement_exists = x + 1;
 }
 
-void setup() {
-
-    Serial.begin(115200);
-    Serial.print("\r\nTWANG VERSION: ");
-    Serial.println(VERSION);
-
-    // MPU
-    Wire.begin();
-
+void tof_initialize() {
     pinMode(interruptPin, INPUT_PULLUP);
     attachInterrupt(interruptPin, tof_interrupt, FALLING);
 
     DEV_I2C.begin(); // Initialize I2C bus.
-    sensor_vl53l4cd_sat.begin(); // Configure VL53L4CD satellite component.
+    auto status = VL53L4CD_ERROR_NONE;
+    status |= sensor_vl53l4cd_sat.begin(); // Configure VL53L4CD satellite component.
     sensor_vl53l4cd_sat.VL53L4CD_Off(); // Switch off VL53L4CD satellite component.
-    sensor_vl53l4cd_sat.InitSensor(); //Initialize VL53L4CD satellite component.
-    sensor_vl53l4cd_sat.VL53L4CD_SetRangeTiming(24, 0);
-    sensor_vl53l4cd_sat.VL53L4CD_StartRanging(); // Start Measurements
+    status |= sensor_vl53l4cd_sat.InitSensor(); //Initialize VL53L4CD satellite component.
+    status |= sensor_vl53l4cd_sat.VL53L4CD_SetRangeTiming(200, 0);
+    status |= sensor_vl53l4cd_sat.VL53L4CD_StartRanging(); // Start Measurements
+    if (status != VL53L4CD_ERROR_NONE) {
+        Serial.print("VL53L4CD initialization issue: ");
+        Serial.println(status);
+        exit(1);
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    Serial.print("\r\nTWANG VERSION: ");
+    Serial.println(VERSION);
+    // MPU
+    Wire.begin();
+
+    tof_initialize();
 
     // Fast LED
     FastLED.addLeds<APA102, LED_DATA_PIN, LED_CLOCK_PIN, BGR, DATA_RATE_MHZ(20)>(leds, LED_COUNT);
@@ -634,30 +643,30 @@ void tickStartup(unsigned long mm)
     {
         int n = min(map(((mm-stageStartTime)), 0, STARTUP_WIPEUP_DUR, 0, LED_COUNT), LED_COUNT);  // fill from top to bottom
         for(int i = 0; i<= n; i++){
-            leds[i] = CRGB(0, 255, 0);
+            leds[i] = CRGB(0, 100, 0);
         }
     }
     else if(stageStartTime+STARTUP_SPARKLE_DUR > mm) // sparkle the full green bar
     {
         for(int i = 0; i< LED_COUNT; i++){
-            if(random8(30) < 28)
-                leds[i] = CRGB(0, 255, 0);  // most are green
-            else {
+            if(random8(50) == 0) {
                 int flicker = random8(250);
                 leds[i] = CRGB(flicker, 150, flicker); // some flicker brighter
+            } else {
+                leds[i] = CRGB(0, 100, 0);  // most are green
             }
         }
     }
     else if (stageStartTime+STARTUP_FADE_DUR > mm) // fade it out to bottom
     {
         int n = max(map(((mm-stageStartTime)), STARTUP_SPARKLE_DUR, STARTUP_FADE_DUR, 0, LED_COUNT), 0);  // fill from top to bottom
-        int brightness = max(map(((mm-stageStartTime)), STARTUP_SPARKLE_DUR, STARTUP_FADE_DUR, 255, 0), 0);
+        int brightness = max(map(((mm-stageStartTime)), STARTUP_SPARKLE_DUR, STARTUP_FADE_DUR, 100, 0), 0);
 
         for(int i = n; i< LED_COUNT; i++){
             leds[i] = CRGB(0, brightness, 0);
         }
     }
-    SFXFreqSweepWarble(STARTUP_FADE_DUR, millis()-stageStartTime, 40, 400, 20);
+    SFXFreqSweepWarble(STARTUP_FADE_DUR, mm-stageStartTime, 40, 400, 20);
 }
 
 void tickEnemies(){
@@ -1038,17 +1047,15 @@ void screenSaverTick(){
 }
 
 void getInput(){
-    if (!tof_measurement_exists) {
+    if (tof_measurement_exists == 0) {
         return; // nothing new
     }
-    tof_measurement_exists = false; // reset
     uint8_t NewDataReady = 0;
     uint8_t status = sensor_vl53l4cd_sat.VL53L4CD_CheckForDataReady(&NewDataReady);
 
     char report[64];
     // TODO: consider the case where there is no measurement because no hand
     if ((!status) && (NewDataReady != 0)) {
-        sensor_vl53l4cd_sat.VL53L4CD_ClearInterrupt(); // (Mandatory) Clear HW interrupt to restart measurements
 
         // Read measured distance. RangeStatus = 0 means valid data
         VL53L4CD_Result_t results;
@@ -1061,6 +1068,11 @@ void getInput(){
         snprintf(report, sizeof(report), "dis %4i sig %3i %5i ",
                  results.distance_mm, results.sigma_mm, dist_mm);
         SerialPort.print(report);
+
+        if (results.sigma_mm > 10) {
+            SerialPort.print("??? ");
+            dist_mm = 999;
+        }
 
         if (dist_mm > TOF_MAX) { // "nothing" detected
             tofOffset = TOF_NOTHING;
@@ -1080,7 +1092,14 @@ void getInput(){
                 SerialPort.println("NOK");
             }
         }
+    } else {
+        snprintf(report, sizeof(report), "NOK %4i xxx %3i %2i",
+                 status, NewDataReady, tof_measurement_exists);
+        SerialPort.println(report);
     }
+
+    tof_measurement_exists = 0; // reset
+    sensor_vl53l4cd_sat.VL53L4CD_ClearInterrupt(); // (Mandatory) Clear HW interrupt to restart measurements
 }
 
 // ---------------------------------
