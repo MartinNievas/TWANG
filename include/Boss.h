@@ -17,11 +17,11 @@ class Boss
 void Boss::Spawn(){
     _pos = 800;
     _lives = 3;
-    _alive = 1;
+    _alive = true;
 }
 
 void Boss::Hit(){
-    _lives --;
+    _lives--;
     if(_lives == 0) {
         Kill();
         return;
@@ -38,5 +38,5 @@ bool Boss::Alive(){
 }
 
 void Boss::Kill(){
-    _alive = 0;
+    _alive = false;
 }

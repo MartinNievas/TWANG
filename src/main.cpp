@@ -41,8 +41,8 @@
 #define START_LEVEL 0 // 15
 #define MAX_PLAYER_SPEED     10     // Max move speed of the player per frame
 #define LIVES_PER_LEVEL		 30
-#define DEFAULT_ATTACK_WIDTH 120    // Width of the wobble attack, world is 1000 wide
-#define ATTACK_DURATION      500    // Duration of a wobble attack (ms)
+#define DEFAULT_ATTACK_WIDTH 150    // Width of the wobble attack, world is 1000 wide
+#define ATTACK_DURATION      300    // Duration of a wobble attack (ms)
 #define BOSS_WIDTH           40
 
 #define SCREENSAVER_TIMEOUT              30000  // time until screen saver
@@ -61,12 +61,13 @@ const int TOF_NOTHING = -999; // "distance" reported when out of range
 const int TOF_MAX = 900;    // minimum distance considered out of range [mm]
 int tofOffset = TOF_NOTHING;
 
-int attack_width = DEFAULT_ATTACK_WIDTH;
+int attackWidth = 0;
 unsigned long attackMillis = 0;             // Time the attack started
 bool attacking = 0;                // Is the attack in progress?
 bool attackAvailable = false;
+int attackCenter;
 
-uint8_t AUDIO_VOLUME = 5; // 0-10
+const uint8_t AUDIO_VOLUME = 5; // 0-10
 
 CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
 RunningMedian MPUDistanceSamples = RunningMedian(3);
@@ -174,7 +175,7 @@ void getInput();
 void SFXFreqSweepWarble(int duration, int elapsedTime, int freqStart, int freqEnd, int warble);
 void SFXFreqSweepNoise(int duration, int elapsedTime, int freqStart, int freqEnd, uint8_t noiseFactor);
 void SFXtilt(int amount);
-void SFXattacking();
+void SFXattacking(unsigned long mm);
 void SFXdead();
 void SFXgameover();
 void SFXkill();
@@ -219,7 +220,7 @@ void setup() {
     }
 #endif
 
-    stage = STARTUP;
+    stage = SCREENSAVER; // was STARTUP
     stageStartTime = millis();
     lives = LIVES_PER_LEVEL;
 }
@@ -233,11 +234,12 @@ void loopPlay(unsigned long mm) {
         if (attackMillis + ATTACK_DURATION < mm) { // end attack
             attacking = false;
         } else { // while attack in progress
-            SFXattacking();
+            SFXattacking(mm);
         }
     } else { // not attacking currently
         if (attackAvailable && tofOffset == TOF_NOTHING) { // start attack
             attackMillis = mm;
+            attackCenter = playerPosition;
             attacking = true;
             attackAvailable = false;
         }
@@ -247,12 +249,16 @@ void loopPlay(unsigned long mm) {
     }
     playerPosition += playerPositionModifier; // forced move by elevators
 
-    if (tofOffset == TOF_NOTHING) {
-        SFXcomplete();
-    } else { // some input by the player exists
-        SFXtilt(tofOffset);
+    if (!attacking) {
+        if (tofOffset == TOF_NOTHING) {
+            SFXcomplete();
+        } else {
+            SFXtilt(tofOffset);
+        }
+    }
+
+    if (tofOffset != TOF_NOTHING) { // some input by the player exists
         int moveAmount = getPlayerSpeed();
-        // not needed: moveAmount = constrain(moveAmount, -MAX_PLAYER_SPEED, MAX_PLAYER_SPEED);
         playerPosition += moveAmount;
         if(playerPosition < 0) {
             playerPosition = 0;
@@ -273,11 +279,11 @@ void loopPlay(unsigned long mm) {
 
     FastLED.clear();
     tickConveyors(mm);
+    drawAttack(mm);
     tickBoss();
     tickSpawners(mm);
     tickLava(mm);
     tickEnemies();
-    drawAttack(mm);
     drawPlayer();
     drawExit();
 }
@@ -354,7 +360,7 @@ void loadLevel(){
     lastLevel = false; // this gets changed on the boss level
 
     /// Defaults...OK to change the following items in the levels below
-    attack_width = DEFAULT_ATTACK_WIDTH;
+    attackWidth = 0;
     playerPosition = 0;
 
     /* ==== Level Editing Guide ===============
@@ -470,7 +476,7 @@ void loadLevel(){
             spawnEnemy(700, 0, 2, 0);
             break;
         case 9:   // spawn train skinny attack width;
-            attack_width = DEFAULT_ATTACK_WIDTH / 3;
+            attackWidth = DEFAULT_ATTACK_WIDTH / 3; // TODO 28-Jul-2023/mvk: fix
             spawnPool[0].Spawn(900, 1800, 2, 0, 0);
             break;
         case 10:  // evil fast split spawner
@@ -665,7 +671,7 @@ void tickEnemies(){
             i.Tick();
             // Hit attack?
             if(attacking){
-                if(i._pos > playerPosition-(attack_width/2) && i._pos < playerPosition+(attack_width/2)){
+                if(i._pos > attackCenter-(attackWidth / 2) && i._pos < attackCenter + (attackWidth / 2)){
                     i.Kill();
                     SFXkill();
                 }
@@ -706,8 +712,8 @@ void tickBoss(){
         // CHECK FOR ATTACK
         if(attacking){
             if(
-                    (getLED(playerPosition+(attack_width/2)) >= getLED(boss._pos - BOSS_WIDTH/2) && getLED(playerPosition+(attack_width/2)) <= getLED(boss._pos + BOSS_WIDTH/2)) ||
-                    (getLED(playerPosition-(attack_width/2)) <= getLED(boss._pos + BOSS_WIDTH/2) && getLED(playerPosition-(attack_width/2)) >= getLED(boss._pos - BOSS_WIDTH/2))
+                    (getLED(attackCenter+(attackWidth / 2)) >= getLED(boss._pos - BOSS_WIDTH / 2) && getLED(attackCenter + (attackWidth / 2)) <= getLED(boss._pos + BOSS_WIDTH / 2)) ||
+                    (getLED(attackCenter-(attackWidth / 2)) <= getLED(boss._pos + BOSS_WIDTH / 2) && getLED(attackCenter - (attackWidth / 2)) >= getLED(boss._pos - BOSS_WIDTH / 2))
                     ){
                 boss.Hit();
                 if(boss.Alive()){
@@ -968,19 +974,26 @@ void drawAttack(unsigned long mm){
     if(!attacking) {
         return;
     }
-    int n = map(mm - attackMillis, 0, ATTACK_DURATION, 100, 5);
-    for(int i = getLED(playerPosition-(attack_width/2))+1; i<=getLED(playerPosition+(attack_width/2))-1; i++){
-        leds[i] = CRGB(0, 0, n);
+    attackWidth = map(mm - attackMillis, 0, ATTACK_DURATION, 5, DEFAULT_ATTACK_WIDTH);
+    uint8_t color = 255;
+    int centerLed = getLED(attackCenter);
+    int leftLed = getLED(attackCenter - (attackWidth / 2));
+    bool edge = true;
+    for (int i = leftLed; i <= centerLed; i++) {
+        int ii = centerLed + (centerLed - i);
+        if (edge) {
+            leds[i] = CRGB(100, 100, 255);
+            leds[ii] = CRGB(100, 100, 255);
+            edge = false;
+        } else {
+            leds[i] = CRGB(0, 0, color);
+            leds[ii] = CRGB(0, 0, color);
+        }
+        if (color <= 30) {
+            break;
+        }
+        color -= 30;
     }
-    if(n > 90) {
-        n = 255;
-        leds[getLED(playerPosition)] = CRGB(255, 255, 255);
-    }else{
-        n = 0;
-        leds[getLED(playerPosition)] = CRGB(0, 255, 0);
-    }
-    leds[getLED(playerPosition-(attack_width/2))] = CRGB(n, n, 255);
-    leds[getLED(playerPosition+(attack_width/2))] = CRGB(n, n, 255);
 }
 
 int getLED(int pos){
@@ -1096,18 +1109,9 @@ void getInput(){
         tofOffset = TOF_NOTHING;
         stat = "OUT";
     } else {
-        bool updateOffset = true;
-        //if (tofOffset == TOF_NOTHING) { // hand entered the sensor
-        //    // wait until there is less noise
-        //    updateOffset = MPUDistanceSamples.getHighest() - MPUDistanceSamples.getLowest() < 100;
-        //}
-        if (updateOffset) {
-            tofOffset = dist_mm - TOF_ZERO;
-            tofOffset = constrain(tofOffset, -TOF_RANGE, TOF_RANGE);
-            stat = "USE";
-        } else {
-            stat = "NOK";
-        }
+        tofOffset = dist_mm - TOF_ZERO;
+        tofOffset = constrain(tofOffset, -TOF_RANGE, TOF_RANGE);
+        stat = "USE";
     }
     char report[64];
     snprintf(report, sizeof(report), "%s %4imm ~%3i%s ->%4i",
@@ -1175,8 +1179,8 @@ void SFXtilt(int amount){
     toneAC(f, min(min(abs(amount)/9, 5), AUDIO_VOLUME));
 }
 
-void SFXattacking(){
-    int freq = map(sin(millis()/2.0)*1000.0, -1000, 1000, 500, 600);
+void SFXattacking(unsigned long mm){
+    int freq = map(sin(mm / 2.0) * 1000.0, -1000, 1000, 500, 600);
     if(random8(5)== 0){
         freq *= 3;
     }

@@ -1,6 +1,6 @@
 #include "Arduino.h"
 
-const float GRAVITY = 0.981; // [1/tick]
+const float GRAVITY = 0.7; // [1/tick]
 const float SLOWDOWN = 0.97;
 
 class Particle {
@@ -18,7 +18,7 @@ class Particle {
 void Particle::Spawn(int pos, int baseSpeed){
     _pos = (double) pos;
     _speed = (double) baseSpeed + (double) random(-100, 100) / 4.0;
-    _maxLife = 20 + (int) random(100) + (int) _speed * 2;
+    _maxLife = (int) random(50) + abs((int) _speed) * 2;
     _life = _maxLife;
 }
 
