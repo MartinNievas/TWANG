@@ -10,8 +10,6 @@
 	https://github.com/Critters/TWANG
 
 */
-#define VERSION "2023-06-25"
-
 // Required libs
 #include "FastLED.h"
 #include "Wire.h"
@@ -35,13 +33,14 @@
 #define LED_CLOCK_PIN            13
 #define VIRTUAL_LED_COUNT 1000
 #define LED_COUNT 144 * 2 - 5
-#define LED_BRIGHTNESS 150
+#define LED_BRIGHTNESS 60
 
-#define APA102_CONVEYOR_BRIGHTNES 8
-#define APA102_LAVA_OFF_BRIGHTNESS 4
+#define APA102_CONVEYOR_BRIGHTNES 10
+#define APA102_LAVA_OFF_BRIGHTNESS 5
 
+#define START_LEVEL 0 // 15
 #define MAX_PLAYER_SPEED     10     // Max move speed of the player per frame
-#define LIVES_PER_LEVEL		 10
+#define LIVES_PER_LEVEL		 30
 #define DEFAULT_ATTACK_WIDTH 120    // Width of the wobble attack, world is 1000 wide
 #define ATTACK_DURATION      500    // Duration of a wobble attack (ms)
 #define BOSS_WIDTH           40
@@ -54,7 +53,7 @@
 //#define USE_LIFELEDS  // uncomment this to make Life LEDs available (not used in the B. Dring enclosure)
 
 unsigned long previousMillis = 0;           // Time of the last redraw
-int levelNumber = 0;
+int levelNumber = START_LEVEL;
 
 const int TOF_ZERO = 450;   // a fixed zero-point or TOF_RANGE to set it dynamically [mm]
 const int TOF_RANGE = 300;  // max range from center until reaching max speed [mm]
@@ -67,7 +66,7 @@ unsigned long attackMillis = 0;             // Time the attack started
 bool attacking = 0;                // Is the attack in progress?
 bool attackAvailable = false;
 
-uint8_t AUDIO_VOLUME = 1; // 0-10
+uint8_t AUDIO_VOLUME = 5; // 0-10
 
 CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
 RunningMedian MPUDistanceSamples = RunningMedian(3);
@@ -202,8 +201,6 @@ void tof_initialize() {
 
 void setup() {
     Serial.begin(115200);
-    Serial.print("\r\nTWANG VERSION: ");
-    Serial.println(VERSION);
     // MPU
     Wire.begin();
 
@@ -212,7 +209,7 @@ void setup() {
     // Fast LED
     FastLED.addLeds<APA102, LED_DATA_PIN, LED_CLOCK_PIN, BGR, DATA_RATE_MHZ(20)>(leds, LED_COUNT);
     FastLED.setBrightness(LED_BRIGHTNESS);
-    FastLED.setDither(1);
+    //FastLED.setDither(1);
 
     // Life LEDs
 #ifdef USE_LIFELEDS
@@ -225,6 +222,10 @@ void setup() {
     stage = STARTUP;
     stageStartTime = millis();
     lives = LIVES_PER_LEVEL;
+}
+
+int getPlayerSpeed() {
+    return -tofOffset * MAX_PLAYER_SPEED / TOF_RANGE;
 }
 
 void loopPlay(unsigned long mm) {
@@ -250,9 +251,9 @@ void loopPlay(unsigned long mm) {
         SFXcomplete();
     } else { // some input by the player exists
         SFXtilt(tofOffset);
-        int moveAmount = tofOffset * MAX_PLAYER_SPEED / TOF_RANGE;
+        int moveAmount = getPlayerSpeed();
         // not needed: moveAmount = constrain(moveAmount, -MAX_PLAYER_SPEED, MAX_PLAYER_SPEED);
-        playerPosition -= moveAmount;
+        playerPosition += moveAmount;
         if(playerPosition < 0) {
             playerPosition = 0;
         }
@@ -272,8 +273,8 @@ void loopPlay(unsigned long mm) {
 
     FastLED.clear();
     tickConveyors(mm);
-    tickSpawners(mm);
     tickBoss();
+    tickSpawners(mm);
     tickLava(mm);
     tickEnemies();
     drawAttack(mm);
@@ -307,7 +308,7 @@ void loop() {
                 tickStartup(mm);
             } else {
                 SFXcomplete();
-                levelNumber = 0;
+                levelNumber = START_LEVEL;
                 loadLevel();
             }
         }else if(stage == PLAY){
@@ -332,7 +333,7 @@ void loop() {
             else
             {
                 FastLED.clear();
-                levelNumber = 0;
+                levelNumber = START_LEVEL;
                 lives = LIVES_PER_LEVEL;
                 loadLevel();
             }
@@ -440,21 +441,22 @@ void loadLevel(){
             break;
         case 5:
             // Sin enemy swarm
-            spawnEnemy(700, 1, 7, 275);
-            spawnEnemy(500, 1, 5, 250);
-            spawnEnemy(600, 1, 7, 200);
-            spawnEnemy(800, 1, 5, 350);
-            spawnEnemy(400, 1, 7, 150);
-            spawnEnemy(450, 1, 5, 400);
+            spawnEnemy(700 + random8(10), 1, 7, 265 + random8(20));
+            spawnEnemy(500 + random8(10), 1, 5, 240 + random8(20));
+            spawnEnemy(600 + random8(10), 1, 7, 190 + random8(20));
+            spawnEnemy(800 + random8(10), 1, 5, 340 + random8(20));
+            spawnEnemy(400 + random8(10), 1, 7, 140 + random8(20));
+            spawnEnemy(450 + random8(10), 1, 5, 390 + random8(20));
             break;
         case 6:
             // Conveyor
-            spawnConveyor(100, 600, -6);
-            spawnEnemy(800, 0, 0, 0);
+            spawnConveyor(200, 700, -6);
+            spawnEnemy(850, 0, 0, 0);
+            spawnPool[0].Spawn(10, 10000, 1, 1, 8000);
             break;
         case 7:
             // Conveyor of enemies
-            spawnConveyor(50, 1000, 4);
+            spawnConveyor(50, 950, 4);
             spawnEnemy(300, 0, 0, 0);
             spawnEnemy(400, 0, 0, 0);
             spawnEnemy(500, 0, 0, 0);
@@ -491,8 +493,8 @@ void loadLevel(){
             // Sin enemy #2 practice (slow conveyor)
             spawnEnemy(700, 1, 7, 275);
             spawnEnemy(500, 1, 5, 250);
-            spawnPool[0].Spawn(1000, 5500, 4, 0, 3000);
-            spawnPool[1].Spawn(0, 5500, 5, 1, 10000);
+            spawnPool[0].Spawn(990, 5500, 4, 0, 3000);
+            spawnPool[1].Spawn(10, 5500, 5, 1, 10000);
             spawnConveyor(100, 900, -2);
             break;
         case 14:
@@ -523,8 +525,8 @@ void moveBoss(){
     int spawnSpeed = 1800;
     if(boss._lives == 2) spawnSpeed = 1600;
     if(boss._lives == 1) spawnSpeed = 1000;
-    spawnPool[0].Spawn(boss._pos, spawnSpeed, 3, 0, 0);
-    spawnPool[1].Spawn(boss._pos, spawnSpeed, 3, 1, 0);
+    spawnPool[0].Spawn(boss._pos - BOSS_WIDTH / 2, spawnSpeed, 3, 0, 0);
+    spawnPool[1].Spawn(boss._pos + BOSS_WIDTH / 2, spawnSpeed, 3, 1, 0);
 }
 
 /* ======================== spawn Functions =====================================
@@ -599,7 +601,7 @@ void nextLevel(){
     levelNumber ++;
     //if(levelNumber > LEVEL_COUNT)
     if(lastLevel)
-        levelNumber = 0;
+        levelNumber = START_LEVEL;
     lives = LIVES_PER_LEVEL;
     loadLevel();
 }
@@ -614,7 +616,7 @@ void die(){
         stageStartTime = millis();
     } else {
         for(auto & p : particlePool){
-            p.Spawn(playerPosition);
+            p.Spawn(playerPosition, getPlayerSpeed());
         }
         stageStartTime = millis();
         stage = DEAD;
@@ -795,13 +797,14 @@ bool tickParticles(){
     bool stillActive = false;
     uint8_t brightness;
     for(auto & p : particlePool){
-        if(p.Alive()){
-            p.Tick(USE_GRAVITY);
-            if (p._power < 5){
-                brightness = (5 - p._power) * 10;
-                leds[getLED(p._pos)] += CRGB(brightness, brightness/2, brightness/2);\
-			} else {
-                leds[getLED(p._pos)] += CRGB(p._power, 0, 0);\
+        if (p.Alive()) {
+            p.Tick();
+            if (p._life <= 5) {
+                brightness = (5 - p._life) * 10;
+                leds[getLED((int) p._pos)] += CRGB(brightness, brightness/2, brightness/2);
+            } else {
+                brightness = map(p._life, 0, p._maxLife, 50, 255);
+                leds[getLED((int) p._pos)] += CRGB(brightness, 0, 0);
             }
             stillActive = true;
         }
@@ -1017,6 +1020,9 @@ void screenSaverTick(){
     SFXcomplete(); // make sure there is no sound...play testing showed this to be a problem
 
     // Random flashes
+    for(auto i = 0; i<LED_COUNT; i++){
+        leds[i].nscale8(250);
+    }
     randomSeed(mm);
     for(auto i = 0; i<LED_COUNT; i++){
         if(random8(20) == 0){
