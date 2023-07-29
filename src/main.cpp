@@ -210,7 +210,7 @@ void setup() {
     // Fast LED
     FastLED.addLeds<APA102, LED_DATA_PIN, LED_CLOCK_PIN, BGR, DATA_RATE_MHZ(20)>(leds, LED_COUNT);
     FastLED.setBrightness(LED_BRIGHTNESS);
-    //FastLED.setDither(1);
+    FastLED.setDither(1);
 
     // Life LEDs
 #ifdef USE_LIFELEDS
@@ -810,7 +810,8 @@ bool tickParticles(){
                 leds[getLED((int) p._pos)] += CRGB(brightness, brightness/2, brightness/2);
             } else {
                 brightness = map(p._life, 0, p._maxLife, 50, 255);
-                leds[getLED((int) p._pos)] += CRGB(brightness, 0, 0);
+                uint8_t orange = random8(25);
+                leds[getLED((int) p._pos)] = CRGB(brightness, orange, 0);
             }
             stillActive = true;
         }
@@ -977,17 +978,21 @@ void drawAttack(unsigned long mm){
     attackWidth = map(mm - attackMillis, 0, ATTACK_DURATION, 5, DEFAULT_ATTACK_WIDTH);
     uint8_t color = 255;
     int centerLed = getLED(attackCenter);
-    int leftLed = getLED(attackCenter - (attackWidth / 2));
+    // aka getLED without constraint such that the attack can reach over borders
+    auto leftLed = (int) map(attackCenter - (attackWidth / 2), 0, VIRTUAL_LED_COUNT, 0, LED_COUNT - 1);
     bool edge = true;
     for (int i = leftLed; i <= centerLed; i++) {
         int ii = centerLed + (centerLed - i);
+        auto pxl = CRGB(0, 0, color);
         if (edge) {
-            leds[i] = CRGB(100, 100, 255);
-            leds[ii] = CRGB(100, 100, 255);
+            pxl = CRGB(100, 100, 255);
             edge = false;
-        } else {
-            leds[i] = CRGB(0, 0, color);
-            leds[ii] = CRGB(0, 0, color);
+        }
+        if (i >= 0) {
+            leds[i] = pxl;
+        }
+        if (ii < LED_COUNT) {
+            leds[ii] = pxl;
         }
         if (color <= 30) {
             break;
