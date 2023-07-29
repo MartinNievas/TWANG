@@ -40,16 +40,14 @@
 
 #define START_LEVEL 0 // 15
 #define MAX_PLAYER_SPEED     10     // Max move speed of the player per frame
-#define LIVES_PER_LEVEL		 30
+#define LIVES_PER_LEVEL		 10
 #define DEFAULT_ATTACK_WIDTH 150    // Width of the wobble attack, world is 1000 wide
 #define ATTACK_DURATION      300    // Duration of a wobble attack (ms)
 #define BOSS_WIDTH           40
 
-#define SCREENSAVER_TIMEOUT              30000  // time until screen saver
+#define SCREENSAVER_TIMEOUT  30000  // time until screen saver
 
 #define MIN_REDRAW_INTERVAL  16    // Min redraw interval (ms) 33 = 30fps / 16 = 63fps
-#define USE_GRAVITY          1     // 0/1 use gravity (LED strip going up wall)
-#define BEND_POINT           750   // 0/1000 point at which the LED strip goes up the wall
 //#define USE_LIFELEDS  // uncomment this to make Life LEDs available (not used in the B. Dring enclosure)
 
 unsigned long previousMillis = 0;           // Time of the last redraw
@@ -141,6 +139,9 @@ Conveyor conveyorPool[CONVEYOR_COUNT] = {
         Conveyor(), Conveyor()
 };
 
+#define TUNNEL_COUNT 3
+
+
 Boss boss = Boss();
 
 void loadLevel();
@@ -225,8 +226,53 @@ void setup() {
     lives = LIVES_PER_LEVEL;
 }
 
+int lifeParticlePos[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+double lifeParticleSpeed[] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+
+void spawnLifeParticles() {
+    //auto spacing = VIRTUAL_LED_COUNT / (lives + 1);
+    auto spacing = 20;
+    for (auto i = 0; i < lives; i++) {
+        lifeParticlePos[i] = spacing + i * spacing;
+        lifeParticleSpeed[i] = 0;
+    }
+}
+
+void drawLifeParticles(unsigned long mm) {
+    uint8_t color = constrain(map(mm - stageStartTime, 0, 500, 50, 255), 0, 255);
+    for (auto i = 0; i < lives; i++) {
+        if (lifeParticlePos[i] == 0) {
+            continue;
+        }
+        auto particleIsRight = playerPosition < lifeParticlePos[i];
+        auto gravity = 0.5;
+        if (particleIsRight) {
+            gravity *= -1;
+        }
+        if (mm - stageStartTime < 500) {
+            gravity = 0;
+        }
+        lifeParticlePos[i] += lifeParticleSpeed[i];
+        lifeParticleSpeed[i] += gravity;
+        auto particleIsStillRight = playerPosition < lifeParticlePos[i];
+        if (particleIsRight != particleIsStillRight) {
+            // we are home
+            lifeParticlePos[i] = 0;
+            SFXkill();
+        } else { // draw it
+            leds[getLED(lifeParticlePos[i])] = CRGB(color * 2 / 3, 0, color);
+        }
+    }
+}
+
 int getPlayerSpeed() {
     return -tofOffset * MAX_PLAYER_SPEED / TOF_RANGE;
+}
+
+void drawBackground() {
+    //for (auto i = 0; i < LED_COUNT; i++) {
+    //    leds[i] = CRGB(leds[i].DarkMagenta).fadeToBlackBy(242);
+    //}
 }
 
 void loopPlay(unsigned long mm) {
@@ -278,9 +324,11 @@ void loopPlay(unsigned long mm) {
     }
 
     FastLED.clear();
+    drawBackground();
     tickConveyors(mm);
     drawAttack(mm);
     tickBoss();
+    drawLifeParticles(mm);
     tickSpawners(mm);
     tickLava(mm);
     tickEnemies();
@@ -320,24 +368,20 @@ void loop() {
         }else if(stage == PLAY){
             loopPlay(mm);
         }else if(stage == DEAD){
-            // DEAD			
             SFXdead();
             FastLED.clear();
             tickDie(mm);
             if(!tickParticles()){
                 loadLevel();
             }
-        }else if(stage == WIN){// LEVEL COMPLETE   
+        } else if(stage == WIN){// LEVEL COMPLETE
             tickWin(mm);
-        }else if(stage == BOSS_KILLED){
+        } else if(stage == BOSS_KILLED){
             tickBossKilled(mm);
         } else if (stage == GAMEOVER) {
-            if (stageStartTime+GAMEOVER_FADE_DURATION > mm)
-            {
+            if (stageStartTime+GAMEOVER_FADE_DURATION > mm) {
                 tickGameover(mm);
-            }
-            else
-            {
+            } else {
                 FastLED.clear();
                 levelNumber = START_LEVEL;
                 lives = LIVES_PER_LEVEL;
@@ -355,8 +399,8 @@ void loop() {
 void loadLevel(){
     // leave these alone
     FastLED.setBrightness(LED_BRIGHTNESS);
-    updateLives();
     cleanupLevel();
+    spawnLifeParticles();
     lastLevel = false; // this gets changed on the boss level
 
     /// Defaults...OK to change the following items in the levels below
@@ -490,10 +534,10 @@ void loadLevel(){
             break;
         case 12:
             // Lava run
-            spawnLava(195, 300, 2000, 2000, 0, Lava::OFF);
-            spawnLava(400, 500, 2000, 2000, 0, Lava::OFF);
-            spawnLava(600, 700, 2000, 2000, 0, Lava::OFF);
-            spawnPool[0].Spawn(1000, 3800, 4, 0, 0);
+            spawnLava(195, 280, 2000, 2000, 0, Lava::OFF);
+            spawnLava(400, 480, 2000, 2000, 0, Lava::OFF);
+            spawnLava(600, 680, 2000, 2000, 0, Lava::OFF);
+            spawnPool[0].Spawn(990, 3800, 4, 0, 0);
             break;
         case 13:
             // Sin enemy #2 practice (slow conveyor)
@@ -508,9 +552,9 @@ void loadLevel(){
             spawnEnemy(800, 1, 7, 275);
             spawnEnemy(700, 1, 7, 275);
             spawnEnemy(500, 1, 5, 250);
-            spawnPool[0].Spawn(1000, 3000, 4, 0, 3000);
+            spawnPool[0].Spawn(990, 3000, 4, 0, 3000);
             spawnPool[1].Spawn(0, 5500, 5, 1, 10000);
-            spawnConveyor(100, 900, -4);
+            spawnConveyor(100, 900, -5);
             break;
         case 15: // (don't edit last level)
             // Boss this should always be the last level			
@@ -966,8 +1010,6 @@ void drawLives()
         }
         leds[pos++] = CRGB(0, 0, 0);
     }
-    FastLED.show();
-    delay(500);
     FastLED.clear();
 }
 
@@ -994,10 +1036,10 @@ void drawAttack(unsigned long mm){
         if (ii < LED_COUNT) {
             leds[ii] = pxl;
         }
-        if (color <= 30) {
+        if (color <= 25) {
             break;
         }
-        color -= 30;
+        color -= 25;
     }
 }
 
