@@ -69,6 +69,17 @@ public:
         }
     }
 
+    template <typename F>
+
+    void KillIf(F func) {
+        for (auto &enemy: pool) {
+            if (func(enemy.Pos())) {
+                enemy.Kill();
+                SFXkill();
+            }
+        }
+    }
+
     void Tick(unsigned long mm) {
         for (auto &enemy: pool) {
             enemy.Tick(mm);

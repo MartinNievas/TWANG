@@ -30,7 +30,6 @@
 #define LED_CLOCK_PIN            13
 #define LED_BRIGHTNESS 72
 
-#define APA102_LAVA_OFF_BRIGHTNESS 5
 
 #define START_LEVEL 6 // 15
 #define LIVES_PER_LEVEL		 10
@@ -104,10 +103,7 @@ Spawner spawnPool[SPAWN_COUNT] = {
         Spawner(), Spawner()
 };
 
-#define LAVA_COUNT 4
-Lava lavaPool[LAVA_COUNT] = {
-        Lava(), Lava(), Lava(), Lava()
-};
+LavaPool lavaPool = LavaPool(enemyPool);
 
 ConveyorPool conveyorPool = ConveyorPool();
 
@@ -118,7 +114,7 @@ void loadLevel();
 void spawnBoss();
 void moveBoss();
 void spawnEnemy(int pos, int dir, int speed, int wobble);
-void spawnLava(int left, int right, int ontime, int offtime, int offset, int state);
+void spawnLava(int left, int right, int ontime, int offtime, int offset, bool isActive);
 void spawnConveyor(int startPoint, int endPoint, int dir);
 void cleanupLevel();
 void levelComplete();
@@ -137,7 +133,6 @@ void tickGameover(unsigned long mm);
 void tickWin(long mm);
 void drawAttack(unsigned long mm);
 int getLED(int pos);
-bool inLava(int pos);
 void screenSaverTick();
 void getInput();
 
@@ -435,7 +430,7 @@ void loadLevel(){
             break;
         case 3:
             // Lava intro
-            spawnLava(400, 490, 2000, 2000, 0, Lava::OFF);
+            spawnLava(400, 490, 2000, 2000, 0, false);
             spawnEnemy(350, 0, 1, 0);
             spawnPool[0].Spawn(900, 5500, 3, 0, 0);
 
@@ -550,13 +545,8 @@ void spawnEnemy(int pos, int dir, int speed, int wobble){
     enemyPool.Spawn(pos, speed, wobble);
 }
 
-void spawnLava(int left, int right, int ontime, int offtime, int offset, int state){
-    for(auto & i : lavaPool){
-        if(!i.Alive()){
-            i.Spawn(left, right, ontime, offtime, offset, state);
-            return;
-        }
-    }
+void spawnLava(int left, int right, int ontime, int offtime, int offset, bool isActive){
+    lavaPool.Spawn(left, right, ontime, offtime, offset, isActive);
 }
 
 void spawnConveyor(int startPoint, int endPoint, int dir){
@@ -569,9 +559,7 @@ void cleanupLevel(){
     for(auto & i : spawnPool){
         i.Kill();
     }
-    for(auto & i : lavaPool){
-        i.Kill();
-    }
+    lavaPool.Kill();
     conveyorPool.Kill();
     boss.Kill();
 }
@@ -753,38 +741,7 @@ void tickSpawners(unsigned long mm){
 }
 
 void tickLava(unsigned long mm){
-    uint8_t lava_off_brightness = APA102_LAVA_OFF_BRIGHTNESS;
-    Lava LP;
-    for(auto & i : lavaPool){
-        LP = i;
-        if(LP.Alive()){
-            int A = getLED(LP._left);
-            int B = getLED(LP._right);
-            int p;
-            if(LP._state == Lava::OFF){
-                if(LP._lastOn + LP._offtime < mm){
-                    LP._state = Lava::ON;
-                    LP._lastOn = mm;
-                }
-                for(p = A; p<= B; p++){
-                    auto flicker = random8(lava_off_brightness);
-                    leds[p] = CRGB(lava_off_brightness+flicker, (lava_off_brightness+flicker)/1.5, 0);
-                }
-            }else if(LP._state == Lava::ON){
-                if(LP._lastOn + LP._ontime < mm){
-                    LP._state = Lava::OFF;
-                    LP._lastOn = mm;
-                }
-                for(p = A; p<= B; p++){
-                    if(random8(30) < 29)
-                        leds[p] = CRGB(150, 0, 0);
-                    else
-                        leds[p] = CRGB(180, 100, 0);
-                }
-            }
-        }
-        i = LP;
-    }
+    lavaPool.Tick(mm);
 }
 
 void tickBossKilled(unsigned long mm) // boss funeral
@@ -916,19 +873,6 @@ void drawAttack(unsigned long mm){
         }
         color -= 25;
     }
-}
-
-bool inLava(int pos){
-    // Returns if the player is in active lava
-    int i;
-    Lava LP;
-    for(i = 0; i<LAVA_COUNT; i++){
-        LP = lavaPool[i];
-        if(LP.Alive() && LP._state == Lava::ON){
-            if(LP._left < pos && LP._right > pos) return true;
-        }
-    }
-    return false;
 }
 
 // ---------------------------------
