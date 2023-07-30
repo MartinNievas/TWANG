@@ -11,7 +11,6 @@
 
 */
 // Required libs
-#include <FastLED.h>
 #include <Wire.h>
 #include <toneAC.h>
 #include <RunningMedian.h>
@@ -24,19 +23,16 @@
 #include "Lava.h"
 #include "Boss.h"
 #include "Conveyor.h"
+#include "Constants.h"
 
 // LED Strip Setup
 #define LED_DATA_PIN             3
 #define LED_CLOCK_PIN            13
-#define VIRTUAL_LED_COUNT 1000
-#define LED_COUNT 144 * 2 - 5
-#define LED_BRIGHTNESS 60
+#define LED_BRIGHTNESS 72
 
-#define APA102_CONVEYOR_BRIGHTNES 10
 #define APA102_LAVA_OFF_BRIGHTNESS 5
 
 #define START_LEVEL 0 // 15
-#define MAX_PLAYER_SPEED     10     // Max move speed of the player per frame
 #define LIVES_PER_LEVEL		 10
 #define DEFAULT_ATTACK_WIDTH 150    // Width of the wobble attack, world is 1000 wide
 #define ATTACK_DURATION      300    // Duration of a wobble attack (ms)
@@ -57,13 +53,12 @@ int tofOffset = TOF_NOTHING;
 
 int attackWidth = 0;
 unsigned long attackMillis = 0;             // Time the attack started
-bool attacking = 0;                // Is the attack in progress?
+bool attacking = false;                // Is the attack in progress?
 bool attackAvailable = false;
 int attackCenter;
 
 const uint8_t AUDIO_VOLUME = 0; // 0-10
 
-CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
 RunningMedian MPUDistanceSamples = RunningMedian(3);
 
 #define DEV_I2C Wire
@@ -84,7 +79,6 @@ int score;
 unsigned long stageStartTime;               // Stores the time the stage changed for stages that are time based
 unsigned long lastInputTime = 0;
 int playerPosition;                // Stores the player position
-int playerPositionModifier;        // +/- adjustment to player position
 unsigned long killTime;
 uint8_t lives;
 bool lastLevel = false;
@@ -115,10 +109,7 @@ Enemy enemyPool[ENEMY_COUNT] = {
 };
 
 
-#define PARTICLE_COUNT 40
-Particle particlePool[PARTICLE_COUNT] = {
-        Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle()
-};
+ParticlePool particlePool = ParticlePool();
 
 #define SPAWN_COUNT 2
 Spawner spawnPool[SPAWN_COUNT] = {
@@ -130,12 +121,7 @@ Lava lavaPool[LAVA_COUNT] = {
         Lava(), Lava(), Lava(), Lava()
 };
 
-#define CONVEYOR_COUNT 2
-Conveyor conveyorPool[CONVEYOR_COUNT] = {
-        Conveyor(), Conveyor()
-};
-
-#define TUNNEL_COUNT 3
+ConveyorPool conveyorPool = ConveyorPool();
 
 
 Boss boss = Boss();
@@ -157,8 +143,6 @@ void drawPlayer();
 void drawExit(unsigned long mm);
 void tickSpawners(unsigned long mm);
 void tickLava(unsigned long mm);
-bool tickParticles();
-void tickConveyors(unsigned long mm);
 void tickBossKilled(unsigned long mm);
 void tickDie(unsigned long mm);
 void tickGameover(unsigned long mm);
@@ -287,7 +271,7 @@ void loopPlay(unsigned long mm) {
             attackAvailable = true;
         }
     }
-    playerPosition += playerPositionModifier; // forced move by elevators
+    playerPosition += conveyorPool.PlayerSpeedModifier(playerPosition); // forced move by elevators
 
     if (!attacking) {
         if (tofOffset == TOF_NOTHING) {
@@ -319,7 +303,7 @@ void loopPlay(unsigned long mm) {
 
     FastLED.clear();
     drawBackground();
-    tickConveyors(mm);
+    conveyorPool.Tick(mm);
     drawAttack(mm);
     tickBoss();
     drawLifeParticles(mm);
@@ -365,7 +349,8 @@ void loop() {
             SFXdead();
             FastLED.clear();
             tickDie(mm);
-            if(!tickParticles()){
+            bool animationOngoing = particlePool.Tick();
+            if(!animationOngoing){
                 loadLevel();
             }
         } else if(stage == WIN){// LEVEL COMPLETE
@@ -601,30 +586,21 @@ void spawnLava(int left, int right, int ontime, int offtime, int offset, int sta
 }
 
 void spawnConveyor(int startPoint, int endPoint, int dir){
-    for(auto & i : conveyorPool){
-        if(!i._alive){
-            i.Spawn(startPoint, endPoint, dir);
-            return;
-        }
-    }
+    conveyorPool.Spawn(startPoint, endPoint, dir);
 }
 
 void cleanupLevel(){
     for(auto & i : enemyPool){
         i.Kill();
     }
-    for(auto & i : particlePool){
-        i.Kill();
-    }
+    particlePool.Kill();
     for(auto & i : spawnPool){
         i.Kill();
     }
     for(auto & i : lavaPool){
         i.Kill();
     }
-    for(auto & i : conveyorPool){
-        i.Kill();
-    }
+    conveyorPool.Kill();
     boss.Kill();
 }
 
@@ -652,16 +628,14 @@ void nextLevel(){
 
 void die(){
     attackAvailable = false;
-    if(levelNumber > 0)
+    if(levelNumber > 0) {
         lives--;
-
+    }
     if(lives == 0){
         stage = GAMEOVER;
         stageStartTime = millis();
     } else {
-        for(auto & p : particlePool){
-            p.Spawn(playerPosition, getPlayerSpeed());
-        }
+        particlePool.Spawn(playerPosition, getPlayerSpeed());
         stageStartTime = millis();
         stage = DEAD;
     }
@@ -841,55 +815,6 @@ void tickLava(unsigned long mm){
     }
 }
 
-bool tickParticles(){
-    bool stillActive = false;
-    uint8_t brightness;
-    for(auto & p : particlePool){
-        if (p.Alive()) {
-            p.Tick();
-            if (p._life <= 5) {
-                brightness = (5 - p._life) * 10;
-                leds[getLED((int) p._pos)] += CRGB(brightness, brightness/2, brightness/2);
-            } else {
-                brightness = map(p._life, 0, p._maxLife, 50, 255);
-                uint8_t orange = random8(25);
-                leds[getLED((int) p._pos)] = CRGB(brightness, orange, 0);
-            }
-            stillActive = true;
-        }
-    }
-    return stillActive;
-}
-
-void tickConveyors(unsigned long mm){
-    int b, speed, n, ss, ee;
-    unsigned long m = 10000 + mm;
-    playerPositionModifier = 0;
-    uint8_t conveyor_brightness;
-    conveyor_brightness = APA102_CONVEYOR_BRIGHTNES;
-    int levels = 5; // brightness levels in conveyor
-    for(auto & i : conveyorPool){
-        if(i._alive){
-            speed = constrain(i._speed, -MAX_PLAYER_SPEED+1, MAX_PLAYER_SPEED-1);
-            ss = getLED(i._startPoint);
-            ee = getLED(i._endPoint);
-            for(int led = ss; led<ee; led++){
-                n = (-led + (m/100)) % levels;
-                if(speed < 0) {
-                    n = (led + (m/100)) % levels;
-                }
-                b = map(n, 5, 0, 0, conveyor_brightness);
-                if(b > 0) {
-                    leds[led] = CRGB(0, 0, b);
-                }
-            }
-            if(playerPosition > i._startPoint && playerPosition < i._endPoint){
-                playerPositionModifier = speed;
-            }
-        }
-    }
-}
-
 void tickBossKilled(unsigned long mm) // boss funeral
 {
     static uint8_t gHue = 0;
@@ -1021,11 +946,6 @@ void drawAttack(unsigned long mm){
     }
 }
 
-int getLED(int pos){
-    // The world is 1000 pixels wide, this converts world units into an LED number
-    return constrain((int)map(pos, 0, VIRTUAL_LED_COUNT, 0, LED_COUNT-1), 0, LED_COUNT-1);
-}
-
 bool inLava(int pos){
     // Returns if the player is in active lava
     int i;
@@ -1131,10 +1051,10 @@ void getInput(){
         tofOffset = constrain(tofOffset, -TOF_RANGE, TOF_RANGE);
         stat = "USE";
     }
-    char report[64];
-    snprintf(report, sizeof(report), "%s %4imm ~%3i%s ->%4i",
-             stat, results.distance_mm, results.sigma_mm, sigmaChar, dist_mm);
-    SerialPort.println(report);
+//    char report[64];
+//    snprintf(report, sizeof(report), "%s %4imm ~%3i%s ->%4i",
+//             stat, results.distance_mm, results.sigma_mm, sigmaChar, dist_mm);
+//    SerialPort.println(report);
 }
 
 // ---------------------------------
@@ -1192,8 +1112,8 @@ void SFXFreqSweepNoise(int duration, int elapsedTime, int freqStart, int freqEnd
 
 void SFXtilt(int amount){
     auto f = map(abs(amount), 0, TOF_RANGE, 300, 900) + random8(80);
-    if(playerPositionModifier < 0) f -= 500;
-    if(playerPositionModifier > 0) f += 200;
+//    if(playerPositionModifier < 0) f -= 500;
+//    if(playerPositionModifier > 0) f += 200;
     toneAC(f, min(min(abs(amount)/9, 5), AUDIO_VOLUME));
 }
 
