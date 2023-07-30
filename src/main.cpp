@@ -12,11 +12,11 @@
 */
 // Required libs
 #include <Wire.h>
-#include <toneAC.h>
 #include <RunningMedian.h>
 #include <vl53l4cd_class.h>
 
 // Included libs
+#include "Audio.h"
 #include "Enemy.h"
 #include "Particle.h"
 #include "Spawner.h"
@@ -32,7 +32,7 @@
 
 #define APA102_LAVA_OFF_BRIGHTNESS 5
 
-#define START_LEVEL 0 // 15
+#define START_LEVEL 6 // 15
 #define LIVES_PER_LEVEL		 10
 #define DEFAULT_ATTACK_WIDTH 150    // Width of the wobble attack, world is 1000 wide
 #define ATTACK_DURATION      300    // Duration of a wobble attack (ms)
@@ -56,8 +56,6 @@ unsigned long attackMillis = 0;             // Time the attack started
 bool attacking = false;                // Is the attack in progress?
 bool attackAvailable = false;
 int attackCenter;
-
-const uint8_t AUDIO_VOLUME = 0; // 0-10
 
 RunningMedian MPUDistanceSamples = RunningMedian(3);
 
@@ -96,18 +94,8 @@ bool lastLevel = false;
 #define WIN_CLEAR_DURATION 1000
 #define WIN_OFF_DURATION 1200
 
-#ifdef USE_LIFELEDS
-#define LIFE_LEDS 3
-	int lifeLEDs[LIFE_LEDS] = {7, 6, 5}; // these numbers are Arduino GPIO numbers...this is not used in the B. Dring enclosure design
-#endif
-
-
 // POOLS
-#define ENEMY_COUNT 10
-Enemy enemyPool[ENEMY_COUNT] = {
-        Enemy(), Enemy(), Enemy(), Enemy(), Enemy(), Enemy(), Enemy(), Enemy(), Enemy(), Enemy()
-};
-
+EnemyPool enemyPool = EnemyPool();
 
 ParticlePool particlePool = ParticlePool();
 
@@ -152,17 +140,6 @@ int getLED(int pos);
 bool inLava(int pos);
 void screenSaverTick();
 void getInput();
-void SFXFreqSweepWarble(int duration, int elapsedTime, int freqStart, int freqEnd, int warble);
-void SFXFreqSweepNoise(int duration, int elapsedTime, int freqStart, int freqEnd, uint8_t noiseFactor);
-void SFXtilt(int amount);
-void SFXattacking(unsigned long mm);
-void SFXdead();
-void SFXgameover();
-void SFXkill();
-void SFXwin();
-void SFXbosskilled();
-void SFXcomplete();
-long map_constrain(long x, long in_min, long in_max, long out_min, long out_max);
 
 void tof_initialize() {
     DEV_I2C.begin(); // Initialize I2C bus.
@@ -238,7 +215,7 @@ void drawLifeParticles(unsigned long mm) {
             lifeParticlePos[i] = 0;
             SFXkill();
         } else { // draw it
-            leds[getLED(lifeParticlePos[i])] = CRGB(color * 2 / 3, 0, color);
+            leds[getLED(lifeParticlePos[i])] = CRGB(0, color * 2 / 3, color);
         }
     }
 }
@@ -277,7 +254,7 @@ void loopPlay(unsigned long mm) {
         if (tofOffset == TOF_NOTHING) {
             SFXcomplete();
         } else {
-            SFXtilt(tofOffset);
+            SFXtilt(tofOffset, TOF_RANGE);
         }
     }
 
@@ -324,7 +301,7 @@ void loop() {
         if(tofOffset != TOF_NOTHING){ // we are active: hand is moving
             lastInputTime = mm;
             if(stage == SCREENSAVER){
-                levelNumber = -1;
+                levelNumber = START_LEVEL - 1;
                 stageStartTime = mm;
                 stage = WIN;
             }
@@ -346,7 +323,7 @@ void loop() {
         }else if(stage == PLAY){
             loopPlay(mm);
         }else if(stage == DEAD){
-            SFXdead();
+            SFXdead(mm - killTime);
             FastLED.clear();
             tickDie(mm);
             bool animationOngoing = particlePool.Tick();
@@ -481,7 +458,7 @@ void loadLevel(){
             // Conveyor
             spawnConveyor(200, 700, -6);
             spawnEnemy(850, 0, 0, 0);
-            spawnPool[0].Spawn(10, 10000, 1, 1, 8000);
+            spawnPool[0].Spawn(10, 1000, 2, 1, 8000);
             break;
         case 7:
             // Conveyor of enemies
@@ -567,13 +544,10 @@ void moveBoss(){
    ==============================================================================
 */
 void spawnEnemy(int pos, int dir, int speed, int wobble){
-    for(auto & e : enemyPool){  // look for one that is not alive for a place to add one
-        if(!e.Alive()){
-            e.Spawn(pos, dir, speed, wobble);
-            e.playerSide = pos > playerPosition?1:-1;
-            return;
-        }
+    if (dir == 1) {
+        speed = -speed;
     }
+    enemyPool.Spawn(pos, speed, wobble);
 }
 
 void spawnLava(int left, int right, int ontime, int offtime, int offset, int state){
@@ -590,9 +564,7 @@ void spawnConveyor(int startPoint, int endPoint, int dir){
 }
 
 void cleanupLevel(){
-    for(auto & i : enemyPool){
-        i.Kill();
-    }
+    enemyPool.Kill();
     particlePool.Kill();
     for(auto & i : spawnPool){
         i.Kill();
@@ -635,7 +607,7 @@ void die(){
         stage = GAMEOVER;
         stageStartTime = millis();
     } else {
-        particlePool.Spawn(playerPosition, getPlayerSpeed());
+        particlePool.SpawnPlayerDeath(playerPosition, getPlayerSpeed());
         stageStartTime = millis();
         stage = DEAD;
     }
@@ -830,7 +802,7 @@ void tickBossKilled(unsigned long mm) // boss funeral
         if( random8() < 200) {  // add glitter
             leds[ random16(LED_COUNT) ] += CRGB::White;
         }
-        SFXbosskilled();
+        SFXbosskilled(mm - stageStartTime);
     }else if(stageStartTime+7000 > mm){
         int n = max(map(((mm-stageStartTime)), 5000, 5500, LED_COUNT, 0), 0);
         for(int i = 0; i< n; i++){
@@ -880,7 +852,7 @@ void tickGameover(unsigned long mm) {
         for(int i = getLED(playerPosition); i>= n; i--){
             leds[i] = CRGB(255, 0, 0);
         }
-        SFXgameover();
+        SFXgameover(mm - killTime);
     }
     else if(stageStartTime+GAMEOVER_FADE_DURATION > mm)  // fade down to bottom and fade brightness
     {
@@ -902,13 +874,13 @@ void tickWin(long mm) {
         for(int i = LED_COUNT; i>= n; i--){
             leds[i] = CRGB(0, 255, 0);
         }
-        SFXwin();
+        SFXwin(mm - stageStartTime);
     }else if(stageStartTime+WIN_CLEAR_DURATION > mm){
         int n = max(map(((mm-stageStartTime)), WIN_FILL_DURATION, WIN_CLEAR_DURATION, LED_COUNT, 0), 0);  // clear from top to bottom
         for(int i = 0; i< n; i++){
             leds[i] = CRGB(0, 255, 0);
         }
-        SFXwin();
+        SFXwin(mm - stageStartTime);
     }else if(stageStartTime+WIN_OFF_DURATION > mm){   // wait a while with leds off
         leds[0] = CRGB(0, 255, 0);
     }else{
@@ -1055,112 +1027,4 @@ void getInput(){
 //    snprintf(report, sizeof(report), "%s %4imm ~%3i%s ->%4i",
 //             stat, results.distance_mm, results.sigma_mm, sigmaChar, dist_mm);
 //    SerialPort.println(report);
-}
-
-// ---------------------------------
-// -------------- SFX --------------
-// ---------------------------------
-
-/*
-   This is used sweep across (up or down) a frequency range for a specified duration.
-   A sin based warble is added to the frequency. This function is meant to be called
-   on each frame to adjust the frequency in sync with an animation
-   
-   duration 	= over what time period is this mapped
-   elapsedTime 	= how far into the duration are we in
-   freqStart 	= the beginning frequency
-   freqEnd 		= the ending frequency
-   warble 		= the amount of warble added (0 disables)   
-   
-
-*/
-void SFXFreqSweepWarble(int duration, int elapsedTime, int freqStart, int freqEnd, int warble)
-{
-    int freq = map_constrain(elapsedTime, 0, duration, freqStart, freqEnd);
-    if (warble)
-        warble = map(sin(millis()/20.0)*1000.0, -1000, 1000, 0, warble);
-
-    toneAC(freq + warble, AUDIO_VOLUME);
-}
-
-/*
-   
-   This is used sweep across (up or down) a frequency range for a specified duration.
-   Random noise is optionally added to the frequency. This function is meant to be called
-   on each frame to adjust the frequency in sync with an animation
-   
-   duration 	= over what time period is this mapped
-   elapsedTime 	= how far into the duration are we in
-   freqStart 	= the beginning frequency
-   freqEnd 		= the ending frequency
-   noiseFactor 	= the amount of noise to added/subtracted (0 disables)   
-   
-
-*/
-void SFXFreqSweepNoise(int duration, int elapsedTime, int freqStart, int freqEnd, uint8_t noiseFactor){
-    int freq;
-    if (elapsedTime > duration)
-        freq = freqEnd;
-    else
-        freq = map(elapsedTime, 0, duration, freqStart, freqEnd);
-
-    if (noiseFactor)
-        noiseFactor = noiseFactor - random8(noiseFactor / 2);
-
-    toneAC(freq + noiseFactor, AUDIO_VOLUME);
-}
-
-void SFXtilt(int amount){
-    auto f = map(abs(amount), 0, TOF_RANGE, 300, 900) + random8(80);
-//    if(playerPositionModifier < 0) f -= 500;
-//    if(playerPositionModifier > 0) f += 200;
-    toneAC(f, min(min(abs(amount)/9, 5), AUDIO_VOLUME));
-}
-
-void SFXattacking(unsigned long mm){
-    int freq = map(sin(mm / 2.0) * 1000.0, -1000, 1000, 500, 600);
-    if(random8(5)== 0){
-        freq *= 3;
-    }
-    toneAC(freq, AUDIO_VOLUME);
-}
-void SFXdead(){
-    SFXFreqSweepNoise(1000, millis()-killTime, 1000, 10, 200);
-}
-
-void SFXgameover(){
-    SFXFreqSweepWarble(GAMEOVER_SPREAD_DURATION, millis()-killTime, 440, 20, 60);
-}
-
-void SFXkill(){
-    toneAC(2000, AUDIO_VOLUME, 1000, true);
-}
-void SFXwin(){
-    SFXFreqSweepWarble(WIN_OFF_DURATION, millis()-stageStartTime, 40, 400, 20);
-}
-
-void SFXbosskilled(){
-    SFXFreqSweepWarble(7000, millis()-stageStartTime, 75, 1100, 60);
-}
-
-void SFXcomplete(){
-    noToneAC();
-}
-
-/*
-	This works just like the map function except x is constrained to the range of in_min and in_max
-*/
-long map_constrain(long x, long in_min, long in_max, long out_min, long out_max)
-{
-    // constrain the x value to be between in_min and in_max
-    if (in_max > in_min){   // map allows min to be larger than max, but constrain does not
-        x = constrain(x, in_min, in_max);
-    }
-    else {
-        x = constrain(x, in_max, in_min);
-    }
-
-    return map(x, in_min, in_max, out_min, out_max);
-
-
 }

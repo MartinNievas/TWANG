@@ -1,13 +1,14 @@
 #include "Arduino.h"
 
-#define CONVEYOR_COUNT 2
+#define CONVEYOR_COUNT 3
 #define APA102_CONVEYOR_BRIGHTNESS 10
 
 class Conveyor {
+private:
     int _startPoint;
     int _endPoint;
     int _speed;
-    bool _alive;
+    bool _alive = false;
 
 public:
     void Spawn(int startPoint, int endPoint, int speed) {
@@ -26,7 +27,7 @@ public:
     }
 
     void Tick(unsigned long mm) const {
-        if (!_alive) {
+        if (!Alive()) {
             return;
         }
         unsigned long m = 10000 + mm;
@@ -54,32 +55,33 @@ public:
 };
 
 class ConveyorPool {
+private:
     Conveyor _pool[CONVEYOR_COUNT] = {};
 public:
-    void Kill() {
-        for (auto conveyor: _pool) {
-            conveyor.Kill();
-        }
-    }
-
-    void Tick(unsigned long mm) {
-        for (auto const& conveyor: _pool) {
-            conveyor.Tick(mm);
-        }
-    }
-
-    void Spawn(int startPoint, int endPoint, int dir){
-        for(auto conveyor : _pool){
-            if(!conveyor.Alive()){
+    void Spawn(int startPoint, int endPoint, int dir) {
+        for (auto &conveyor: _pool) {
+            if (!conveyor.Alive()) {
                 conveyor.Spawn(startPoint, endPoint, dir);
                 return;
             }
         }
     }
 
+    void Kill() {
+        for (auto &conveyor: _pool) {
+            conveyor.Kill();
+        }
+    }
+
+    void Tick(unsigned long mm) {
+        for (auto const &conveyor: _pool) {
+            conveyor.Tick(mm);
+        }
+    }
+
     int PlayerSpeedModifier(int playerPosition) {
         int speed = 0;
-        for (auto const& conveyor: _pool) {
+        for (auto &conveyor: _pool) {
             speed += conveyor.PlayerSpeedModifier(playerPosition);
         }
         return speed;
