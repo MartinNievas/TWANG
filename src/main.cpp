@@ -11,13 +11,11 @@
 
 */
 // Required libs
-#include "FastLED.h"
-#include "Wire.h"
-#include "toneAC.h"
-#include "RunningMedian.h"
+#include <FastLED.h>
+#include <Wire.h>
+#include <toneAC.h>
+#include <RunningMedian.h>
 #include <vl53l4cd_class.h>
-
-#include <stdint.h> // uint8_t type variables
 
 // Included libs
 #include "Enemy.h"
@@ -26,7 +24,6 @@
 #include "Lava.h"
 #include "Boss.h"
 #include "Conveyor.h"
-
 
 // LED Strip Setup
 #define LED_DATA_PIN             3
@@ -48,7 +45,6 @@
 #define SCREENSAVER_TIMEOUT  30000  // time until screen saver
 
 #define MIN_REDRAW_INTERVAL  16    // Min redraw interval (ms) 33 = 30fps / 16 = 63fps
-//#define USE_LIFELEDS  // uncomment this to make Life LEDs available (not used in the B. Dring enclosure)
 
 unsigned long previousMillis = 0;           // Time of the last redraw
 int levelNumber = START_LEVEL;
@@ -65,7 +61,7 @@ bool attacking = 0;                // Is the attack in progress?
 bool attackAvailable = false;
 int attackCenter;
 
-const uint8_t AUDIO_VOLUME = 5; // 0-10
+const uint8_t AUDIO_VOLUME = 0; // 0-10
 
 CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
 RunningMedian MPUDistanceSamples = RunningMedian(3);
@@ -158,7 +154,7 @@ void tickStartup(unsigned long mm);
 void tickEnemies();
 void tickBoss();
 void drawPlayer();
-void drawExit();
+void drawExit(unsigned long mm);
 void tickSpawners(unsigned long mm);
 void tickLava(unsigned long mm);
 bool tickParticles();
@@ -167,7 +163,6 @@ void tickBossKilled(unsigned long mm);
 void tickDie(unsigned long mm);
 void tickGameover(unsigned long mm);
 void tickWin(long mm);
-void drawLives();
 void drawAttack(unsigned long mm);
 int getLED(int pos);
 bool inLava(int pos);
@@ -184,7 +179,6 @@ void SFXwin();
 void SFXbosskilled();
 void SFXcomplete();
 long map_constrain(long x, long in_min, long in_max, long out_min, long out_max);
-void updateLives();
 
 void tof_initialize() {
     DEV_I2C.begin(); // Initialize I2C bus.
@@ -333,7 +327,7 @@ void loopPlay(unsigned long mm) {
     tickLava(mm);
     tickEnemies();
     drawPlayer();
-    drawExit();
+    drawExit(mm);
 }
 
 void loop() {
@@ -782,10 +776,14 @@ void drawPlayer(){
     leds[getLED(playerPosition)] = CRGB(color2, color1, color2);
 }
 
-void drawExit(){
-    if(!boss.Alive()){
-        leds[LED_COUNT-1] = CRGB(0, 0, 255);
+void drawExit(unsigned long mm){
+    if (boss.Alive()) {
+        return; // there is no escape
     }
+    auto alt = (255 - LED_BRIGHTNESS) / 2;
+    auto middle = LED_BRIGHTNESS + alt;
+    auto color = (uint8_t) (middle + sin((double) (mm - stageStartTime) / 500.0) * alt);
+    leds[LED_COUNT - 1] = CRGB(0, 0, color);
 }
 
 void tickSpawners(unsigned long mm){
@@ -993,26 +991,6 @@ void tickWin(long mm) {
     }
 }
 
-
-void drawLives()
-{
-    // show how many lives are left by drawing a short line of green leds for each life
-    SFXcomplete();  // stop any sounds
-    FastLED.clear();
-
-    int pos = 0;
-    for (int i = 0; i < lives; i++)
-    {
-        for (int j=0; j<4; j++)
-        {
-            leds[pos++] = CRGB(0, 255, 0);
-            FastLED.show();
-        }
-        leds[pos++] = CRGB(0, 0, 0);
-    }
-    FastLED.clear();
-}
-
 void drawAttack(unsigned long mm){
     if(!attacking) {
         return;
@@ -1059,17 +1037,6 @@ bool inLava(int pos){
         }
     }
     return false;
-}
-
-void updateLives(){
-#ifdef USE_LIFELEDS
-    // Updates the life LEDs to show how many lives the player has left
-		for(int i = 0; i<LIFE_LEDS; i++){
-		   digitalWrite(lifeLEDs[i], lives>i?HIGH:LOW);
-		}
-#endif
-
-    drawLives();
 }
 
 // ---------------------------------
