@@ -1127,7 +1127,7 @@ void getInput(){
         if (sigma_mm > 20) {
             sigmaChar = "?";
         }
-    } else if (results.range_status == 2) {
+    } else if (results.range_status == 2 || results.range_status == 4) {
         // expected bad measurement
         if (dist_mm == 0) {
             //SerialPort.print("OMG bad measurement ");
@@ -1138,7 +1138,11 @@ void getInput(){
         sigmaChar = "*";
     } else {
         SerialPort.print("WTF unexpected range status ");
-        SerialPort.println(results.range_status);
+        SerialPort.print(results.range_status);
+        char report[64];
+        snprintf(report, sizeof(report), ": %s %4imm ~%3i%s ->%4i",
+                 "WTF", results.distance_mm, results.sigma_mm, sigmaChar, dist_mm);
+        SerialPort.println(report);
         return;
     }
 
@@ -1147,7 +1151,7 @@ void getInput(){
         dist_mm = TOF_MAX + 1;
     }
 
-    // ok we use this measurement... lets median it to drop outliers
+    // ok we use this measurement... lets median it to drop  outliers
     MPUDistanceSamples.add(dist_mm);
     dist_mm = (int) MPUDistanceSamples.getMedian();
 
