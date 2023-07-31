@@ -61,7 +61,7 @@ bool attacking = 0;                // Is the attack in progress?
 bool attackAvailable = false;
 int attackCenter;
 
-const uint8_t AUDIO_VOLUME = 0; // 0-10
+const uint8_t AUDIO_VOLUME = 5; // 0-10
 
 CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
 RunningMedian MPUDistanceSamples = RunningMedian(3);
@@ -88,6 +88,8 @@ int playerPositionModifier;        // +/- adjustment to player position
 unsigned long killTime;
 uint8_t lives;
 bool lastLevel = false;
+
+int exitPosition;
 
 // TODO all animation durations should be defined rather than literals 
 // because they are used in main loop and some sounds too.
@@ -215,7 +217,7 @@ void setup() {
     }
 #endif
 
-    stage = SCREENSAVER; // was STARTUP
+    stage = STARTUP; // was STARTUP
     stageStartTime = millis();
     lives = LIVES_PER_LEVEL;
 }
@@ -254,7 +256,7 @@ void drawLifeParticles(unsigned long mm) {
             lifeParticlePos[i] = 0;
             SFXkill();
         } else { // draw it
-            leds[getLED(lifeParticlePos[i])] = CRGB(color * 2 / 3, 0, color);
+            leds[getLED(lifeParticlePos[i])] = CRGB(color / 2, 0, color * 2 / 3);
         }
     }
 }
@@ -300,17 +302,20 @@ void loopPlay(unsigned long mm) {
     if (tofOffset != TOF_NOTHING) { // some input by the player exists
         int moveAmount = getPlayerSpeed();
         playerPosition += moveAmount;
-        if(playerPosition < 0) {
-            playerPosition = 0;
-        }
-        if (playerPosition >= VIRTUAL_LED_COUNT) { // end of strip reached
-            if (boss.Alive()) {
-                // stop player from leaving if boss is alive
-                playerPosition = VIRTUAL_LED_COUNT - 1;
-            } else { // Reached exit!
+
+        if (!boss.Alive()) { // check for win first
+            if (exitPosition < VIRTUAL_LED_COUNT / 2 && playerPosition <= exitPosition) {
+                levelComplete();
+                return;
+            } else if (exitPosition > VIRTUAL_LED_COUNT / 2 && playerPosition >= exitPosition) {
                 levelComplete();
                 return;
             }
+        }
+        if(playerPosition < 0) { // prevent leaving the strip
+            playerPosition = 0;
+        } else if (playerPosition > VIRTUAL_LED_COUNT - 1) { // end of strip reached
+            playerPosition = VIRTUAL_LED_COUNT - 1;
         }
     }
     if(inLava(playerPosition)){
@@ -400,6 +405,7 @@ void loadLevel(){
     /// Defaults...OK to change the following items in the levels below
     attackWidth = 0;
     playerPosition = 0;
+    exitPosition = VIRTUAL_LED_COUNT - 1;
 
     /* ==== Level Editing Guide ===============
     Level creation is done by adding to or editing the switch statement below
@@ -496,7 +502,7 @@ void loadLevel(){
             // Conveyor
             spawnConveyor(200, 700, -6);
             spawnEnemy(850, 0, 0, 0);
-            spawnPool[0].Spawn(10, 10000, 1, 1, 8000);
+            spawnPool[0].Spawn(0, 1000, 2, 1, 5000);
             break;
         case 7:
             // Conveyor of enemies
@@ -510,12 +516,15 @@ void loadLevel(){
             spawnEnemy(900, 0, 0, 0);
             break;
         case 8:   // spawn train
-            spawnPool[0].Spawn(900, 1300, 2, 0, 0);
+            spawnPool[0].Spawn(950, 1300, 2, 0, 0);
+            spawnPool[1].Spawn(0, 10000, 4, 1, 5000 + random(10000));
             spawnEnemy(700, 0, 2, 0);
             break;
-        case 9:   // spawn train skinny attack width;
-            attackWidth = DEFAULT_ATTACK_WIDTH / 3; // TODO 28-Jul-2023/mvk: fix
-            spawnPool[0].Spawn(900, 1800, 2, 0, 0);
+        case 9:   // spawn train upside down
+            playerPosition = VIRTUAL_LED_COUNT - 1;
+            exitPosition = 0;
+            spawnPool[0].Spawn(50, 1700, 2, 1, 0);
+            spawnPool[1].Spawn(1000, 10000, 4, 0, 5000 + random(10000));
             break;
         case 10:  // evil fast split spawner
             spawnPool[0].Spawn(550, 1500, 2, 0, 0);
@@ -783,7 +792,7 @@ void drawExit(unsigned long mm){
     auto alt = (255 - LED_BRIGHTNESS) / 2;
     auto middle = LED_BRIGHTNESS + alt;
     auto color = (uint8_t) (middle + sin((double) (mm - stageStartTime) / 500.0) * alt);
-    leds[LED_COUNT - 1] = CRGB(0, 0, color);
+    leds[getLED(exitPosition)] = CRGB(0, 0, color);
 }
 
 void tickSpawners(unsigned long mm){
