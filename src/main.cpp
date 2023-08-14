@@ -61,7 +61,7 @@ bool attacking = 0;                // Is the attack in progress?
 bool attackAvailable = false;
 int attackCenter;
 
-const uint8_t AUDIO_VOLUME = 5; // 0-10
+const uint8_t AUDIO_VOLUME = 10; // 0-10
 
 CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
 RunningMedian MPUDistanceSamples = RunningMedian(3);
@@ -1110,7 +1110,7 @@ void getInput(){
             //SerialPort.println(sigma_mm);
             return;
         }
-        sigma_mm += 10;
+        sigma_mm += 21;
         sigmaChar = "*";
     } else {
         SerialPort.print("WTF unexpected range status ");
