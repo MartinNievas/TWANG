@@ -35,7 +35,7 @@
 #define APA102_CONVEYOR_BRIGHTNES 10
 #define APA102_LAVA_OFF_BRIGHTNESS 5
 
-#define START_LEVEL 0 // 15
+#define START_LEVEL 15 // 15 for boss
 #define MAX_PLAYER_SPEED     10     // Max move speed of the player per frame
 #define LIVES_PER_LEVEL		 10
 #define DEFAULT_ATTACK_WIDTH 150    // Width of the wobble attack, world is 1000 wide
@@ -560,10 +560,18 @@ void spawnBoss(){
 
 void moveBoss(){
     int spawnSpeed = 1800;
-    if(boss._lives == 2) spawnSpeed = 1600;
-    if(boss._lives == 1) spawnSpeed = 1000;
+    exitPosition = VIRTUAL_LED_COUNT;
+    if(boss._lives == 2) {
+        spawnSpeed = 1600;
+        exitPosition = 0;
+    }
+    if(boss._lives == 1) {
+        spawnSpeed = 1000;
+        exitPosition = VIRTUAL_LED_COUNT;
+    }
     spawnPool[0].Spawn(boss._pos - BOSS_WIDTH / 2, spawnSpeed, 3, 0, 0);
     spawnPool[1].Spawn(boss._pos + BOSS_WIDTH / 2, spawnSpeed, 3, 1, 0);
+    //enemyPool[0].Spawn(boss._pos, 0, 0, 0);
 }
 
 /* ======================== spawn Functions =====================================
@@ -730,13 +738,13 @@ void tickEnemies(){
 void tickBoss(){
     // DRAW
     if(boss.Alive()){
-        boss._ticks ++;
         for(int i = getLED(boss._pos-BOSS_WIDTH/2); i<=getLED(boss._pos+BOSS_WIDTH/2); i++){
             leds[i] = CRGB::DarkRed;
             leds[i] %= 100;
         }
         // CHECK COLLISION
-        if(getLED(playerPosition) > getLED(boss._pos - BOSS_WIDTH/2) && getLED(playerPosition) < getLED(boss._pos + BOSS_WIDTH)){
+        if(getLED(playerPosition) > getLED(boss._pos - BOSS_WIDTH/2)
+                && getLED(playerPosition) < getLED(boss._pos + BOSS_WIDTH)){
             die();
             return;
         }
@@ -770,9 +778,6 @@ void drawPlayer(){
 }
 
 void drawExit(unsigned long mm){
-    if (boss.Alive()) {
-        return; // there is no escape
-    }
     auto alt = (255 - LED_BRIGHTNESS) / 2;
     auto middle = LED_BRIGHTNESS + alt;
     auto color = (uint8_t) (middle + sin((double) (mm - stageStartTime) / 500.0) * alt);
@@ -885,6 +890,11 @@ void tickConveyors(unsigned long mm){
 
 void tickBossKilled(unsigned long mm) // boss funeral
 {
+    if (demoMode) { // DONT SHOW in demo mode
+        nextLevel();
+        return;
+    }
+
     static uint8_t gHue = 0;
 
     FastLED.setBrightness(255); // super bright!
@@ -1065,11 +1075,16 @@ int getDemoInput() { // play.... bad :)
         }
     } else { // we were in, let's move hands
         auto override = false;
+        if (boss.Alive() && abs(boss._pos - playerPosition) < BOSS_WIDTH) {
+            override = true;
+            newTof = TOF_NOTHING; // kill it
+            stat = "BOSS";
+        }
         for(auto & e : lavaPool) {
             if (e.Alive() && abs(e._left - playerPosition) < DEFAULT_ATTACK_WIDTH / 4){ // close to lava
                 override = true;
                 if (e._state == Lava::ON || e._lastOn + e._offtime - 100 < millis()) { // (soon) burning
-                    newTof = random(20) - 10; // nearly stop
+                    newTof = random(40) - 20; // nearly stop
                     stat = "LAVA";
                 } else {
                     newTof = min(tofOffset, -maxBotSpeed);
