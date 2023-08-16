@@ -42,7 +42,7 @@
 #define ATTACK_DURATION      300    // Duration of a wobble attack (ms)
 #define BOSS_WIDTH           40
 
-#define SCREENSAVER_TIMEOUT  30000  // time until screen saver
+#define SCREENSAVER_TIMEOUT  3000  // time until screen saver
 
 #define MIN_REDRAW_INTERVAL  16    // Min redraw interval (ms) 33 = 30fps / 16 = 63fps
 
@@ -54,6 +54,7 @@ const int TOF_RANGE = 300;  // max range from center until reaching max speed [m
 const int TOF_NOTHING = -999; // "distance" reported when out of range
 const int TOF_MAX = 900;    // minimum distance considered out of range [mm]
 int tofOffset = TOF_NOTHING;
+bool demoMode = false;
 
 int attackWidth = 0;
 unsigned long attackMillis = 0;             // Time the attack started
@@ -61,7 +62,7 @@ bool attacking = 0;                // Is the attack in progress?
 bool attackAvailable = false;
 int attackCenter;
 
-const uint8_t AUDIO_VOLUME = 10; // 0-10
+const uint8_t AUDIO_VOLUME = 1; // 0-10
 
 CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
 RunningMedian MPUDistanceSamples = RunningMedian(3);
@@ -75,7 +76,6 @@ enum stages {
     PLAY,
     WIN,
     DEAD,
-    SCREENSAVER,
     BOSS_KILLED,
     GAMEOVER
 } stage;
@@ -168,7 +168,6 @@ void tickWin(long mm);
 void drawAttack(unsigned long mm);
 int getLED(int pos);
 bool inLava(int pos);
-void screenSaverTick();
 void getInput();
 void SFXFreqSweepWarble(int duration, int elapsedTime, int freqStart, int freqEnd, int warble);
 void SFXFreqSweepNoise(int duration, int elapsedTime, int freqStart, int freqEnd, uint8_t noiseFactor);
@@ -341,22 +340,7 @@ void loop() {
     if (mm - previousMillis >= MIN_REDRAW_INTERVAL) {
         getInput();
         previousMillis = mm;
-
-        if(tofOffset != TOF_NOTHING){ // we are active: hand is moving
-            lastInputTime = mm;
-            if(stage == SCREENSAVER){
-                levelNumber = -1;
-                stageStartTime = mm;
-                stage = WIN;
-            }
-        }else{
-            if(lastInputTime + SCREENSAVER_TIMEOUT < mm){
-                stage = SCREENSAVER;
-            }
-        }
-        if(stage == SCREENSAVER){
-            screenSaverTick();
-        }else if(stage == STARTUP){
+        if(stage == STARTUP){
             if (stageStartTime + STARTUP_FADE_DUR > mm) {
                 tickStartup(mm);
             } else {
@@ -405,7 +389,7 @@ void loadLevel(){
     /// Defaults...OK to change the following items in the levels below
     attackWidth = 0;
     playerPosition = 0;
-    exitPosition = VIRTUAL_LED_COUNT - 1;
+    exitPosition = VIRTUAL_LED_COUNT;
 
     /* ==== Level Editing Guide ===============
     Level creation is done by adding to or editing the switch statement below
@@ -523,8 +507,8 @@ void loadLevel(){
         case 9:   // spawn train upside down
             playerPosition = VIRTUAL_LED_COUNT - 1;
             exitPosition = 0;
-            spawnPool[0].Spawn(50, 1700, 2, 1, 0);
-            spawnPool[1].Spawn(1000, 10000, 4, 0, 5000 + random(10000));
+            spawnPool[0].Spawn(50, 2100, 2, 1, 0);
+            spawnPool[1].Spawn(1000, 10000, 4, 0, 10000 + random(10000));
             break;
         case 10:  // evil fast split spawner
             spawnPool[0].Spawn(550, 1500, 2, 0, 0);
@@ -1048,23 +1032,67 @@ bool inLava(int pos){
     return false;
 }
 
-// ---------------------------------
-// --------- SCREENSAVER -----------
-// ---------------------------------
-void screenSaverTick(){
-    auto mm = millis();
-    SFXcomplete(); // make sure there is no sound...play testing showed this to be a problem
+int lastDemoSpeed = 0;
 
-    // Random flashes
-    for(auto i = 0; i<LED_COUNT; i++){
-        leds[i].nscale8(250);
+int getDemoInput() { // play.... bad :)
+    auto stat = "????";
+    int newTof = 42;
+    int maxBotSpeed = TOF_RANGE / 4 * 3;
+    if (playerPositionModifier > 0) { // don't accelerate on boosters
+        maxBotSpeed = 0;
     }
-    randomSeed(mm);
-    for(auto i = 0; i<LED_COUNT; i++){
-        if(random8(20) == 0){
-            leds[i] = CHSV( 25, 255, 100);
+    if (playerPositionModifier < 0) { // full speed on slowing elevators
+        maxBotSpeed = TOF_RANGE;
+    }
+
+    if (stageStartTime + 100 > millis()) {
+        newTof = 0; // stand still at level start
+        stat = "STRT";
+    }
+    else if (tofOffset == TOF_NOTHING) { // we were out, lets move in again
+        if (attackMillis + ATTACK_DURATION / 5 * 4 > millis()) {
+            newTof = TOF_NOTHING;
+            stat = "WAIT";
+        } else {
+            newTof = (playerPosition < exitPosition ? -random(20) : random(20)) - 10 + lastDemoSpeed; // move IN
+            stat = "BACK";
+        }
+    } else { // we were in, let's move hands
+        auto override = false;
+        for(auto & e : lavaPool) {
+            if (e.Alive() && abs(e._left - playerPosition) < DEFAULT_ATTACK_WIDTH / 4){ // close to lava
+                override = true;
+                if (e._state == Lava::ON || e._lastOn + e._offtime - 100 < millis()) { // (soon) burning
+                    newTof = random(10) - 5; // nearly stop
+                    stat = "LAVA";
+                } else {
+                    newTof = min(tofOffset, -maxBotSpeed);
+                    stat = "GOGO";
+                }
+            }
+        }
+        for(auto & e : enemyPool) {  // handle enemies
+            if (e.Alive()) {
+                if(abs(e._pos - playerPosition) < DEFAULT_ATTACK_WIDTH/2) {
+                    lastDemoSpeed = tofOffset;
+                    newTof = TOF_NOTHING;
+                    override = true;
+                    stat = "BOOM";
+                }
+            }
+        }
+        if (!override) {
+            int acc = (playerPosition < exitPosition ? -2 : 2) + random8(2) - 1;
+            newTof = constrain(tofOffset + acc, -maxBotSpeed, maxBotSpeed);
+            stat = "MOVE";
         }
     }
+
+    char report[64];
+    snprintf(report, sizeof(report), "%s old:%4i ->%4i",
+             stat, tofOffset, newTof);
+    SerialPort.println(report);
+    return newTof;
 }
 
 void getInput(){
@@ -1132,18 +1160,33 @@ void getInput(){
     dist_mm = (int) MPUDistanceSamples.getMedian();
 
     auto stat = "WTF";
+    int newTof;
     if (dist_mm > TOF_MAX) { // no hand in range detected
-        tofOffset = TOF_NOTHING;
+        newTof = TOF_NOTHING;
         stat = "OUT";
+        if(!demoMode && lastInputTime + SCREENSAVER_TIMEOUT < millis()){
+            SFXkill();
+            demoMode = true;
+        }
     } else {
-        tofOffset = dist_mm - TOF_ZERO;
-        tofOffset = constrain(tofOffset, -TOF_RANGE, TOF_RANGE);
+        if (demoMode) {
+            stage = STARTUP;
+            demoMode = false;
+        }
+        newTof = constrain(dist_mm - TOF_ZERO, -TOF_RANGE, TOF_RANGE);
         stat = "USE";
+        lastInputTime = millis();
     }
+
     char report[64];
-    snprintf(report, sizeof(report), "%s %4imm ~%3i%s ->%4i",
-             stat, results.distance_mm, results.sigma_mm, sigmaChar, dist_mm);
+    snprintf(report, sizeof(report), "%s %4imm ~%3i%s %4i -> %4i",
+             stat, results.distance_mm, results.sigma_mm, sigmaChar, dist_mm, newTof);
     SerialPort.println(report);
+
+    if (demoMode) {
+        newTof = getDemoInput();
+    }
+    tofOffset = newTof;
 }
 
 // ---------------------------------
