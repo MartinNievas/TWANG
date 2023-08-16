@@ -30,7 +30,7 @@
 #define LED_CLOCK_PIN            13
 #define VIRTUAL_LED_COUNT 1000
 #define LED_COUNT 144 * 2 - 5
-#define LED_BRIGHTNESS 60
+#define LED_BRIGHTNESS 255 // was 60
 
 #define APA102_CONVEYOR_BRIGHTNES 10
 #define APA102_LAVA_OFF_BRIGHTNESS 5
@@ -967,13 +967,13 @@ void tickWin(long mm) {
     FastLED.clear();
     if(stageStartTime+WIN_FILL_DURATION > mm){
         int n = max(map(((mm-stageStartTime)), 0, WIN_FILL_DURATION, LED_COUNT, 0), 0);  // fill from top to bottom
-        for(int i = LED_COUNT; i>= n; i--){
+        for(int i = LED_COUNT; i>= n; i-=2){
             leds[i] = CRGB(0, 255, 0);
         }
         SFXwin();
     }else if(stageStartTime+WIN_CLEAR_DURATION > mm){
         int n = max(map(((mm-stageStartTime)), WIN_FILL_DURATION, WIN_CLEAR_DURATION, LED_COUNT, 0), 0);  // clear from top to bottom
-        for(int i = 0; i< n; i++){
+        for(int i = 0; i< n; i+=2){
             leds[i] = CRGB(0, 255, 0);
         }
         SFXwin();
@@ -981,6 +981,12 @@ void tickWin(long mm) {
         leds[0] = CRGB(0, 255, 0);
     }else{
         nextLevel();
+    }
+    for(int i = 0; i<LED_COUNT; i++){
+        if(random8(50) == 0) {
+            int flicker = random8(250);
+            leds[i] = CRGB(flicker, 150, flicker); // some flicker brighter
+        }
     }
 }
 
@@ -1063,7 +1069,7 @@ int getDemoInput() { // play.... bad :)
             if (e.Alive() && abs(e._left - playerPosition) < DEFAULT_ATTACK_WIDTH / 4){ // close to lava
                 override = true;
                 if (e._state == Lava::ON || e._lastOn + e._offtime - 100 < millis()) { // (soon) burning
-                    newTof = random(10) - 5; // nearly stop
+                    newTof = random(20) - 10; // nearly stop
                     stat = "LAVA";
                 } else {
                     newTof = min(tofOffset, -maxBotSpeed);
