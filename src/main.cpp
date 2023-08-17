@@ -30,19 +30,19 @@
 #define LED_CLOCK_PIN            13
 #define VIRTUAL_LED_COUNT 1000
 #define LED_COUNT 144 * 2 - 5
-#define LED_BRIGHTNESS 255 // was 60
+#define LED_BRIGHTNESS 120 // was 60
 
 #define APA102_CONVEYOR_BRIGHTNES 10
 #define APA102_LAVA_OFF_BRIGHTNESS 5
 
-#define START_LEVEL 15 // 15 for boss
+#define START_LEVEL 0 // 15 for boss
 #define MAX_PLAYER_SPEED     10     // Max move speed of the player per frame
 #define LIVES_PER_LEVEL		 10
 #define DEFAULT_ATTACK_WIDTH 150    // Width of the wobble attack, world is 1000 wide
 #define ATTACK_DURATION      300    // Duration of a wobble attack (ms)
 #define BOSS_WIDTH           40
 
-#define SCREENSAVER_TIMEOUT  3000  // time until screen saver
+#define SCREENSAVER_TIMEOUT  30000  // time until screen saver
 
 #define MIN_REDRAW_INTERVAL  16    // Min redraw interval (ms) 33 = 30fps / 16 = 63fps
 
@@ -62,7 +62,7 @@ bool attacking = 0;                // Is the attack in progress?
 bool attackAvailable = false;
 int attackCenter;
 
-const uint8_t AUDIO_VOLUME = 1; // 0-10
+const uint8_t AUDIO_VOLUME = 10; // 0-10
 
 CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
 RunningMedian MPUDistanceSamples = RunningMedian(3);
@@ -122,9 +122,9 @@ Particle particlePool[PARTICLE_COUNT] = {
         Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle(), Particle()
 };
 
-#define SPAWN_COUNT 2
+#define SPAWN_COUNT 3
 Spawner spawnPool[SPAWN_COUNT] = {
-        Spawner(), Spawner()
+        Spawner(), Spawner(), Spawner()
 };
 
 #define LAVA_COUNT 4
@@ -216,7 +216,7 @@ void setup() {
     }
 #endif
 
-    stage = STARTUP; // was STARTUP
+    stage = STARTUP;
     stageStartTime = millis();
     lives = LIVES_PER_LEVEL;
 }
@@ -983,7 +983,7 @@ void tickWin(long mm) {
         SFXwin();
     }else if(stageStartTime+WIN_CLEAR_DURATION > mm){
         int n = max(map(((mm-stageStartTime)), WIN_FILL_DURATION, WIN_CLEAR_DURATION, LED_COUNT, 0), 0);  // clear from top to bottom
-        for(int i = 0; i< n; i+=2){
+        for(int i = 1; i< n; i+=2){
             leds[i] = CRGB(0, 255, 0);
         }
         SFXwin();
@@ -991,11 +991,13 @@ void tickWin(long mm) {
         leds[0] = CRGB(0, 255, 0);
     }else{
         nextLevel();
+        return;
     }
+    int showRand = map(mm - stageStartTime, 0, WIN_OFF_DURATION, 50, 255);
     for(int i = 0; i<LED_COUNT; i++){
-        if(random8(50) == 0) {
-            int flicker = random8(250);
-            leds[i] = CRGB(flicker, 150, flicker); // some flicker brighter
+        if(random8(showRand) == 0) {
+            int flicker = random8(map(mm - stageStartTime, 0, WIN_OFF_DURATION, 200, 0));
+            leds[i] = CRGB(flicker/2, flicker, flicker/2); // some flicker
         }
     }
 }
@@ -1075,8 +1077,9 @@ int getDemoInput() { // play.... bad :)
         }
     } else { // we were in, let's move hands
         auto override = false;
-        if (boss.Alive() && abs(boss._pos - playerPosition) < BOSS_WIDTH) {
+        if (boss.Alive() && abs(boss._pos - playerPosition) < DEFAULT_ATTACK_WIDTH / 2) {
             override = true;
+            lastDemoSpeed = tofOffset / 2;
             newTof = TOF_NOTHING; // kill it
             stat = "BOSS";
         }
@@ -1084,7 +1087,7 @@ int getDemoInput() { // play.... bad :)
             if (e.Alive() && abs(e._left - playerPosition) < DEFAULT_ATTACK_WIDTH / 4){ // close to lava
                 override = true;
                 if (e._state == Lava::ON || e._lastOn + e._offtime - 100 < millis()) { // (soon) burning
-                    newTof = random(40) - 20; // nearly stop
+                    newTof = random(50) - 25; // nearly stop
                     stat = "LAVA";
                 } else {
                     newTof = min(tofOffset, -maxBotSpeed);
@@ -1094,7 +1097,7 @@ int getDemoInput() { // play.... bad :)
         }
         for(auto & e : enemyPool) {  // handle enemies
             if (e.Alive()) {
-                if(abs(e._pos - playerPosition) < DEFAULT_ATTACK_WIDTH/2) {
+                if(abs(e._pos - playerPosition) < DEFAULT_ATTACK_WIDTH / 3) {
                     lastDemoSpeed = tofOffset;
                     newTof = TOF_NOTHING;
                     override = true;
@@ -1103,7 +1106,7 @@ int getDemoInput() { // play.... bad :)
             }
         }
         if (!override) {
-            int acc = (playerPosition < exitPosition ? -2 : 2) + random8(2) - 1;
+            int acc = (playerPosition < exitPosition ? -2 : 2) + random(3) - 1;
             newTof = constrain(tofOffset + acc, -maxBotSpeed, maxBotSpeed);
             stat = "MOVE";
         }
@@ -1192,6 +1195,7 @@ void getInput(){
     } else {
         if (demoMode) {
             stage = STARTUP;
+            stageStartTime = millis();
             demoMode = false;
         }
         newTof = constrain(dist_mm - TOF_ZERO, -TOF_RANGE, TOF_RANGE);
