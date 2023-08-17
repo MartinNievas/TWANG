@@ -137,9 +137,6 @@ Conveyor conveyorPool[CONVEYOR_COUNT] = {
         Conveyor(), Conveyor()
 };
 
-#define TUNNEL_COUNT 3
-
-
 Boss boss = Boss();
 
 void loadLevel();
@@ -475,12 +472,12 @@ void loadLevel(){
             break;
         case 5:
             // Sin enemy swarm
-            spawnEnemy(700 + random8(10), 1, 7, 265 + random8(20));
-            spawnEnemy(500 + random8(10), 1, 5, 240 + random8(20));
+            spawnEnemy(700 + random8(10), 1, 7, 225 + random8(20));
+            spawnEnemy(500 + random8(10), 1, 5, 210 + random8(20));
             spawnEnemy(600 + random8(10), 1, 7, 190 + random8(20));
-            spawnEnemy(800 + random8(10), 1, 5, 340 + random8(20));
+            spawnEnemy(800 + random8(10), 1, 5, 300 + random8(30));
             spawnEnemy(400 + random8(10), 1, 7, 140 + random8(20));
-            spawnEnemy(450 + random8(10), 1, 5, 390 + random8(20));
+            spawnEnemy(450 + random8(10), 1, 5, 330 + random8(30));
             break;
         case 6:
             // Conveyor
@@ -505,7 +502,7 @@ void loadLevel(){
             spawnEnemy(700, 0, 2, 0);
             break;
         case 9:   // spawn train upside down
-            playerPosition = VIRTUAL_LED_COUNT - 1;
+            playerPosition = VIRTUAL_LED_COUNT / 10 * 9;
             exitPosition = 0;
             spawnPool[0].Spawn(50, 2100, 2, 1, 0);
             spawnPool[1].Spawn(1000, 10000, 4, 0, 10000 + random(10000));
@@ -542,6 +539,8 @@ void loadLevel(){
             spawnPool[0].Spawn(990, 3000, 4, 0, 3000);
             spawnPool[1].Spawn(0, 5500, 5, 1, 10000);
             spawnConveyor(100, 900, -5);
+            spawnLava(600, 650, 2000, 2000, 0, Lava::OFF);
+            spawnLava(800, 850, 2000, 2000, 0, Lava::OFF);
             break;
         case 15: // (don't edit last level)
             // Boss this should always be the last level			
@@ -739,8 +738,12 @@ void tickBoss(){
     // DRAW
     if(boss.Alive()){
         for(int i = getLED(boss._pos-BOSS_WIDTH/2); i<=getLED(boss._pos+BOSS_WIDTH/2); i++){
-            leds[i] = CRGB::DarkRed;
-            leds[i] %= 100;
+            if (i % 2 == 0) {
+                leds[i] = CRGB::DarkRed;
+                leds[i] %= 100;
+            } else {
+                leds[i] = CRGB::DarkViolet;
+            }
         }
         // CHECK COLLISION
         if(getLED(playerPosition) > getLED(boss._pos - BOSS_WIDTH/2)
@@ -820,7 +823,7 @@ void tickLava(unsigned long mm){
                 }
                 for(p = A; p<= B; p++){
                     auto flicker = random8(lava_off_brightness);
-                    leds[p] = CRGB(lava_off_brightness+flicker, (lava_off_brightness+flicker)/1.5, 0);
+                    leds[p] = CRGB(lava_off_brightness+flicker, (lava_off_brightness+flicker)/1.2, 0);
                 }
             }else if(LP._state == Lava::ON){
                 if(LP._lastOn + LP._ontime < mm){
