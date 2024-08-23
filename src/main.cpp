@@ -36,12 +36,10 @@
 #define WS2812_CONVEYOR_BRIGHTNES 40
 #define WS2812_LAVA_OFF_BRIGHTNESS 15
 
-
 #define DIRECTION            1     // 0 = right to left, 1 = left to right
 
 #define START_LEVEL 0 // 15 for boss
 #define MAX_PLAYER_SPEED     10     // Max move speed of the player per frame
-#define LIVES_PER_LEVEL		 10
 #define DEFAULT_ATTACK_WIDTH 150    // Width of the wobble attack, world is 1000 wide
 #define ATTACK_DURATION      300    // Duration of a wobble attack (ms)
 #define BOSS_WIDTH           40
@@ -190,17 +188,20 @@ void setup() {
     Wire.begin();
 
     // Try to initialize!
-    // TODO: Initialize
-    //if (!accelgyro.begin()) {
-    //  Serial.println("Failed to find MPU6050 chip");
-    //  while (1) {
-    //    delay(10);
-    //  }
-    //}
+    if (!accelgyro.begin()) {
+     Serial.println("Failed to find MPU6050 chip");
+     while (1) {
+       delay(10);
+     }
+    }
     Serial.println("MPU6050 Found!");
+    accelgyro.setAccelerometerRange(MPU6050_RANGE_4_G);
+    accelgyro.setGyroRange(MPU6050_RANGE_500_DEG);
+    accelgyro.setFilterBandwidth(MPU6050_BAND_21_HZ);
 
     // Fast LED
-    FastLED.addLeds<APA102, LED_DATA_PIN, LED_CLOCK_PIN, BGR, DATA_RATE_MHZ(20)>(leds, LED_COUNT);
+    // FastLED.addLeds<APA102, LED_DATA_PIN, LED_CLOCK_PIN, BGR, DATA_RATE_MHZ(20)>(leds, LED_COUNT);
+    FastLED.addLeds<WS2812B, LED_DATA_PIN, RGB>(leds, LED_COUNT);
     FastLED.setBrightness(LED_BRIGHTNESS);
     FastLED.setDither(1);
 
@@ -268,6 +269,8 @@ void drawBackground() {
 }
 
 void loopPlay(unsigned long mm) {
+    Serial.println("loopPlay");
+    attackAvailable = true;
     if (attacking) {
         if (attackMillis + ATTACK_DURATION < mm) { // end attack
             attacking = false;
@@ -324,7 +327,7 @@ void loop() {
 
     if (mm - previousMillis >= MIN_REDRAW_INTERVAL) {
         // TODO: Get input
-        // getInput();
+        getInput();
         previousMillis = mm;
         if(stage == STARTUP){
             Serial.println("Startup");
@@ -338,7 +341,6 @@ void loop() {
         }else if(stage == PLAY){
             Serial.println("Play");
             Serial.println(playerPosition);
-            playerPosition++;
             loopPlay(mm);
         }else if(stage == DEAD){
             Serial.println("Dead");
@@ -715,7 +717,7 @@ void tickEnemies(){
             }
             // Draw (if still alive)
             if(i.Alive()) {
-                leds[getLED(i._pos)] = CRGB(255, 0, 0);
+                leds[getLED(i._pos)] = CRGB(255, 255, 0);
             }
             // Hit player?
             if(
@@ -1058,14 +1060,14 @@ void getInput(){
 
     sensors_event_t mpu_a, mpu_g, mpu_temp;
     accelgyro.getEvent(&mpu_a, &mpu_g, &mpu_temp);
-    ax = mpu_a.acceleration.x;
-    ay = mpu_a.acceleration.y;
-    az = mpu_a.acceleration.z;
-    gx = mpu_g.gyro.x;
-    gy = mpu_g.gyro.y;
-    gz = mpu_g.gyro.z;
+    ax = (int16_t)mpu_a.acceleration.x * 10;
+    ay = (int16_t)mpu_a.acceleration.y * 10;
+    az = (int16_t)mpu_a.acceleration.z * 10;
+    gx = (int16_t)mpu_g.gyro.x * 10;
+    gy = (int16_t)mpu_g.gyro.y * 10;
+    gz = (int16_t)mpu_g.gyro.z * 10;
 
-    int a = (JOYSTICK_ORIENTATION == 0?ax:(JOYSTICK_ORIENTATION == 1?ay:az))/166;
+    int a = (JOYSTICK_ORIENTATION == 0?ax:(JOYSTICK_ORIENTATION == 1?ay:az));
     int g = (JOYSTICK_ORIENTATION == 0?gx:(JOYSTICK_ORIENTATION == 1?gy:gz));
 	
     if(abs(a) < user_settings.joystick_deadzone) a = 0;
@@ -1076,9 +1078,11 @@ void getInput(){
 
     joystickTilt = MPUAngleSamples.getMedian();
     if(JOYSTICK_DIRECTION == 1) {
-        joystickTilt = 0-joystickTilt;
+        joystickTilt = -joystickTilt;
     }
     joystickWobble = abs(MPUWobbleSamples.getHighest());
+    Serial.print("Wobble: ");
+    Serial.println(joystickWobble);
 
 }
 
@@ -1136,8 +1140,7 @@ void SFXFreqSweepNoise(int duration, int elapsedTime, int freqStart, int freqEnd
 }
 
 void SFXtilt(int amount){
-    // TODO: Update TOF
-    auto f = map(abs(amount), 0, 0, 300, 900) + random8(80);
+    int f = map(abs(amount), 0, 90, 80, 900)+random8(100);
     if(playerPositionModifier < 0) f -= 500;
     if(playerPositionModifier > 0) f += 200;
     toneAC(f, min(min(abs(amount)/9, 5), AUDIO_VOLUME));
