@@ -13,9 +13,9 @@
 // Required libs
 #include <FastLED.h>
 #include <Wire.h>
+#include "Adafruit_MPU6050.h"
 #include <toneAC.h>
 #include <RunningMedian.h>
-#include <vl53l4cd_class.h>
 
 // Included libs
 #include "Enemy.h"
@@ -24,6 +24,7 @@
 #include "Lava.h"
 #include "Boss.h"
 #include "Conveyor.h"
+#include "Constants.h"
 
 // LED Strip Setup
 #define LED_DATA_PIN             3
@@ -32,8 +33,11 @@
 #define LED_COUNT 144 * 2 - 5
 #define LED_BRIGHTNESS 120 // was 60
 
-#define APA102_CONVEYOR_BRIGHTNES 10
-#define APA102_LAVA_OFF_BRIGHTNESS 5
+#define WS2812_CONVEYOR_BRIGHTNES 40
+#define WS2812_LAVA_OFF_BRIGHTNESS 15
+
+
+#define DIRECTION            1     // 0 = right to left, 1 = left to right
 
 #define START_LEVEL 0 // 15 for boss
 #define MAX_PLAYER_SPEED     10     // Max move speed of the player per frame
@@ -49,11 +53,6 @@
 unsigned long previousMillis = 0;           // Time of the last redraw
 int levelNumber = START_LEVEL;
 
-const int TOF_ZERO = 450;   // a fixed zero-point or TOF_RANGE to set it dynamically [mm]
-const int TOF_RANGE = 300;  // max range from center until reaching max speed [mm]
-const int TOF_NOTHING = -999; // "distance" reported when out of range
-const int TOF_MAX = 900;    // minimum distance considered out of range [mm]
-int tofOffset = TOF_NOTHING;
 bool demoMode = false;
 
 int attackWidth = 0;
@@ -65,11 +64,17 @@ int attackCenter;
 const uint8_t AUDIO_VOLUME = 10; // 0-10
 
 CRGB leds[VIRTUAL_LED_COUNT]; // this is set to the max, but the actual number used is set in FastLED.addLeds below
-RunningMedian MPUDistanceSamples = RunningMedian(3);
+
+// MPU
+Adafruit_MPU6050 accelgyro;
+RunningMedian MPUAngleSamples = RunningMedian(5);
+RunningMedian MPUWobbleSamples = RunningMedian(5);
+
+int joystickTilt = 0;              // Stores the angle of the joystick
+int joystickWobble = 0;            // Stores the max amount of wobble
 
 #define DEV_I2C Wire
 #define SerialPort Serial
-VL53L4CD sensor_vl53l4cd_sat(&DEV_I2C, PIN_A1);
 
 enum stages {
     STARTUP,
@@ -178,27 +183,21 @@ void SFXbosskilled();
 void SFXcomplete();
 long map_constrain(long x, long in_min, long in_max, long out_min, long out_max);
 
-void tof_initialize() {
-    DEV_I2C.begin(); // Initialize I2C bus.
-    auto status = VL53L4CD_ERROR_NONE;
-    status |= sensor_vl53l4cd_sat.begin(); // Configure VL53L4CD satellite component.
-    sensor_vl53l4cd_sat.VL53L4CD_Off(); // Switch off VL53L4CD satellite component.
-    status |= sensor_vl53l4cd_sat.InitSensor(); //Initialize VL53L4CD satellite component.
-    status |= sensor_vl53l4cd_sat.VL53L4CD_SetRangeTiming(32, 0);
-    status |= sensor_vl53l4cd_sat.VL53L4CD_StartRanging(); // Start Measurements
-    if (status != VL53L4CD_ERROR_NONE) {
-        Serial.print("VL53L4CD initialization issue: ");
-        Serial.println(status);
-        exit(1);
-    }
-}
-
 void setup() {
     Serial.begin(115200);
+
     // MPU
     Wire.begin();
 
-    tof_initialize();
+    // Try to initialize!
+    // TODO: Initialize
+    //if (!accelgyro.begin()) {
+    //  Serial.println("Failed to find MPU6050 chip");
+    //  while (1) {
+    //    delay(10);
+    //  }
+    //}
+    Serial.println("MPU6050 Found!");
 
     // Fast LED
     FastLED.addLeds<APA102, LED_DATA_PIN, LED_CLOCK_PIN, BGR, DATA_RATE_MHZ(20)>(leds, LED_COUNT);
@@ -258,7 +257,8 @@ void drawLifeParticles(unsigned long mm) {
 }
 
 int getPlayerSpeed() {
-    return -tofOffset * MAX_PLAYER_SPEED / TOF_RANGE;
+    // TODO: Update max player speed
+    return MAX_PLAYER_SPEED / 10;
 }
 
 void drawBackground() {
@@ -275,45 +275,33 @@ void loopPlay(unsigned long mm) {
             SFXattacking(mm);
         }
     } else { // not attacking currently
-        if (attackAvailable && tofOffset == TOF_NOTHING) { // start attack
+        if (attackAvailable && joystickWobble > user_settings.attack_threshold) { // start attack
             attackMillis = mm;
             attackCenter = playerPosition;
             attacking = true;
             attackAvailable = false;
         }
-        if(tofOffset != TOF_NOTHING) { // player is active after an attack
-            attackAvailable = true;
-        }
     }
     playerPosition += playerPositionModifier; // forced move by elevators
 
-    if (!attacking) {
-        if (tofOffset == TOF_NOTHING) {
-            SFXcomplete();
-        } else {
-            SFXtilt(tofOffset);
+    if(!attacking){
+		SFXtilt(joystickTilt);
+        int moveAmount = (joystickTilt/6.0);
+        if(DIRECTION) moveAmount = -moveAmount;
+        moveAmount = constrain(moveAmount, -MAX_PLAYER_SPEED, MAX_PLAYER_SPEED);
+        playerPosition -= moveAmount;
+        if(playerPosition < 0) playerPosition = 0;
+		// stop player from leaving if boss is alive
+		if (boss.Alive() && playerPosition >= VIRTUAL_LED_COUNT) // move player back
+			playerPosition = VIRTUAL_LED_COUNT - 1;
+					
+        if(playerPosition >= VIRTUAL_LED_COUNT && !boss.Alive()) {
+            // Reached exit!
+            levelComplete();
+            return;
         }
     }
 
-    if (tofOffset != TOF_NOTHING) { // some input by the player exists
-        int moveAmount = getPlayerSpeed();
-        playerPosition += moveAmount;
-
-        if (!boss.Alive()) { // check for win first
-            if (exitPosition < VIRTUAL_LED_COUNT / 2 && playerPosition <= exitPosition) {
-                levelComplete();
-                return;
-            } else if (exitPosition > VIRTUAL_LED_COUNT / 2 && playerPosition >= exitPosition) {
-                levelComplete();
-                return;
-            }
-        }
-        if(playerPosition < 0) { // prevent leaving the strip
-            playerPosition = 0;
-        } else if (playerPosition > VIRTUAL_LED_COUNT - 1) { // end of strip reached
-            playerPosition = VIRTUAL_LED_COUNT - 1;
-        }
-    }
     if(inLava(playerPosition)){
         die();
     }
@@ -335,9 +323,11 @@ void loop() {
     auto mm = millis();
 
     if (mm - previousMillis >= MIN_REDRAW_INTERVAL) {
-        getInput();
+        // TODO: Get input
+        // getInput();
         previousMillis = mm;
         if(stage == STARTUP){
+            Serial.println("Startup");
             if (stageStartTime + STARTUP_FADE_DUR > mm) {
                 tickStartup(mm);
             } else {
@@ -346,8 +336,12 @@ void loop() {
                 loadLevel();
             }
         }else if(stage == PLAY){
+            Serial.println("Play");
+            Serial.println(playerPosition);
+            playerPosition++;
             loopPlay(mm);
         }else if(stage == DEAD){
+            Serial.println("Dead");
             SFXdead();
             FastLED.clear();
             tickDie(mm);
@@ -355,6 +349,7 @@ void loop() {
                 loadLevel();
             }
         } else if(stage == WIN){// LEVEL COMPLETE
+            Serial.println("Win");
             tickWin(mm);
         } else if(stage == BOSS_KILLED){
             tickBossKilled(mm);
@@ -770,14 +765,7 @@ void tickBoss(){
 }
 
 void drawPlayer(){
-    uint8_t color1 = 255;
-    uint8_t color2 = 0;
-    if (tofOffset == TOF_NOTHING) {
-        color1 = 100; // less green if "inactive"
-    } else {
-        color2 = (uint8_t) map(abs(tofOffset), 0, TOF_RANGE, 0, 30);
-    }
-    leds[getLED(playerPosition)] = CRGB(color2, color1, color2);
+    leds[getLED(playerPosition)] = CRGB(0, 255, 0);
 }
 
 void drawExit(unsigned long mm){
@@ -808,7 +796,7 @@ void tickSpawners(unsigned long mm){
 }
 
 void tickLava(unsigned long mm){
-    uint8_t lava_off_brightness = APA102_LAVA_OFF_BRIGHTNESS;
+    uint8_t lava_off_brightness = WS2812_LAVA_OFF_BRIGHTNESS;
     Lava LP;
     for(auto & i : lavaPool){
         LP = i;
@@ -867,7 +855,7 @@ void tickConveyors(unsigned long mm){
     unsigned long m = 10000 + mm;
     playerPositionModifier = 0;
     uint8_t conveyor_brightness;
-    conveyor_brightness = APA102_CONVEYOR_BRIGHTNES;
+    conveyor_brightness = WS2812_CONVEYOR_BRIGHTNES;
     int levels = 5; // brightness levels in conveyor
     for(auto & i : conveyorPool){
         if(i._alive){
@@ -1055,166 +1043,43 @@ bool inLava(int pos){
 
 int lastDemoSpeed = 0;
 
-int getDemoInput() { // play.... bad :)
-    auto stat = "????";
-    int newTof = 42;
-    int maxBotSpeed = TOF_RANGE / 4 * 3;
-    if (playerPositionModifier > 0) { // don't accelerate on boosters
-        maxBotSpeed = 0;
-    }
-    if (playerPositionModifier < 0) { // full speed on slowing elevators
-        maxBotSpeed = TOF_RANGE;
-    }
-
-    if (stageStartTime + 100 > millis()) {
-        newTof = 0; // stand still at level start
-        stat = "STRT";
-    }
-    else if (tofOffset == TOF_NOTHING) { // we were out, lets move in again
-        if (attackMillis + ATTACK_DURATION / 5 * 4 > millis()) {
-            newTof = TOF_NOTHING;
-            stat = "WAIT";
-        } else {
-            newTof = (playerPosition < exitPosition ? -random(20) : random(20)) - 10 + lastDemoSpeed; // move IN
-            stat = "BACK";
-        }
-    } else { // we were in, let's move hands
-        auto override = false;
-        if (boss.Alive() && abs(boss._pos - playerPosition) < DEFAULT_ATTACK_WIDTH / 2) {
-            override = true;
-            lastDemoSpeed = tofOffset / 2;
-            newTof = TOF_NOTHING; // kill it
-            stat = "BOSS";
-        }
-        for(auto & e : lavaPool) {
-            if (e.Alive() && abs(e._left - playerPosition) < DEFAULT_ATTACK_WIDTH / 4){ // close to lava
-                override = true;
-                if (e._state == Lava::ON || e._lastOn + e._offtime - 100 < millis()) { // (soon) burning
-                    newTof = random(50) - 25; // nearly stop
-                    stat = "LAVA";
-                } else {
-                    newTof = min(tofOffset, -maxBotSpeed);
-                    stat = "GOGO";
-                }
-            }
-        }
-        for(auto & e : enemyPool) {  // handle enemies
-            if (e.Alive()) {
-                if(abs(e._pos - playerPosition) < DEFAULT_ATTACK_WIDTH / 3) {
-                    lastDemoSpeed = tofOffset;
-                    newTof = TOF_NOTHING;
-                    override = true;
-                    stat = "BOOM";
-                }
-            }
-        }
-        if (!override) {
-            int acc = (playerPosition < exitPosition ? -2 : 2) + random(3) - 1;
-            newTof = constrain(tofOffset + acc, -maxBotSpeed, maxBotSpeed);
-            stat = "MOVE";
-        }
-    }
-
-    char report[64];
-    snprintf(report, sizeof(report), "%s old:%4i ->%4i",
-             stat, tofOffset, newTof);
-    SerialPort.println(report);
-    return newTof;
-}
-
 void getInput(){
-    uint8_t NewDataReady = 0;
-    auto status = sensor_vl53l4cd_sat.VL53L4CD_CheckForDataReady(&NewDataReady);
-    if (status != VL53L4CD_ERROR_NONE) {
-        // measurement failure :( ...ignore
-        return;
-    }
-    if (NewDataReady == 0) {
-        // no measurement yet, come back later...
-        return;
-    }
-    // (Mandatory) Clear HW interrupt to restart measurements
-    sensor_vl53l4cd_sat.VL53L4CD_ClearInterrupt();
-    // Read measured distance
-    VL53L4CD_Result_t results;
-    status = sensor_vl53l4cd_sat.VL53L4CD_GetResult(&results);
-    if (status != VL53L4CD_ERROR_NONE) {
-        // measurement failure :( ...ignore
-        SerialPort.print("WTF measurement failure, status ");
-        SerialPort.println(status);
-        return;
-    }
+    // This is responsible for the player movement speed and attacking.
+    // You can replace it with anything you want that passes a -90>+90 value to joystickTilt
+    // and any value to joystickWobble that is greater than ATTACK_THRESHOLD (defined at start)
+    // For example you could use 3 momentary buttons:
+        // if(digitalRead(leftButtonPinNumber) == HIGH) joystickTilt = -90;
+        // if(digitalRead(rightButtonPinNumber) == HIGH) joystickTilt = 90;
+        // if(digitalRead(attackButtonPinNumber) == HIGH) joystickWobble = ATTACK_THRESHOLD;
+	int16_t ax, ay, az;
+	int16_t gx, gy, gz;
 
-    auto dist_mm = (int) results.distance_mm;
-    auto sigma_mm = (int) results.sigma_mm;
-    auto sigmaChar = "!";
-    if (results.range_status == 0) {
-        if (dist_mm == 0) {
-            // very fishy... ignore it completely
-            SerialPort.print("WTF zero measurement ");
-            SerialPort.println(results.sigma_mm);
-            return;
-        }
-        if (sigma_mm > 20) {
-            sigmaChar = "?";
-        }
-    } else if (results.range_status == 2 || results.range_status == 4) {
-        // expected bad measurement
-        if (dist_mm == 0) {
-            //SerialPort.print("OMG bad measurement ");
-            //SerialPort.println(sigma_mm);
-            return;
-        }
-        sigma_mm += 21;
-        sigmaChar = "*";
-    } else {
-        SerialPort.print("WTF unexpected range status ");
-        SerialPort.print(results.range_status);
-        char report[64];
-        snprintf(report, sizeof(report), ": %s %4imm ~%3i%s ->%4i",
-                 "WTF", results.distance_mm, results.sigma_mm, sigmaChar, dist_mm);
-        SerialPort.println(report);
-        return;
+    // accelgyro.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
+
+    sensors_event_t mpu_a, mpu_g, mpu_temp;
+    accelgyro.getEvent(&mpu_a, &mpu_g, &mpu_temp);
+    ax = mpu_a.acceleration.x;
+    ay = mpu_a.acceleration.y;
+    az = mpu_a.acceleration.z;
+    gx = mpu_g.gyro.x;
+    gy = mpu_g.gyro.y;
+    gz = mpu_g.gyro.z;
+
+    int a = (JOYSTICK_ORIENTATION == 0?ax:(JOYSTICK_ORIENTATION == 1?ay:az))/166;
+    int g = (JOYSTICK_ORIENTATION == 0?gx:(JOYSTICK_ORIENTATION == 1?gy:gz));
+	
+    if(abs(a) < user_settings.joystick_deadzone) a = 0;
+    if(a > 0) a -= user_settings.joystick_deadzone;
+    if(a < 0) a += user_settings.joystick_deadzone;
+    MPUAngleSamples.add(a);
+    MPUWobbleSamples.add(g);
+
+    joystickTilt = MPUAngleSamples.getMedian();
+    if(JOYSTICK_DIRECTION == 1) {
+        joystickTilt = 0-joystickTilt;
     }
+    joystickWobble = abs(MPUWobbleSamples.getHighest());
 
-    if (sigma_mm > 20) {
-        // too much noise is sometimes an indicator for out of bounds measurement
-        dist_mm = TOF_MAX + 1;
-    }
-
-    // ok we use this measurement... lets median it to drop  outliers
-    MPUDistanceSamples.add(dist_mm);
-    dist_mm = (int) MPUDistanceSamples.getMedian();
-
-    auto stat = "WTF";
-    int newTof;
-    if (dist_mm > TOF_MAX) { // no hand in range detected
-        newTof = TOF_NOTHING;
-        stat = "OUT";
-        if(!demoMode && lastInputTime + SCREENSAVER_TIMEOUT < millis()){
-            SFXkill();
-            demoMode = true;
-        }
-    } else {
-        if (demoMode) {
-            stage = STARTUP;
-            stageStartTime = millis();
-            demoMode = false;
-        }
-        newTof = constrain(dist_mm - TOF_ZERO, -TOF_RANGE, TOF_RANGE);
-        stat = "USE";
-        lastInputTime = millis();
-    }
-
-    char report[64];
-    snprintf(report, sizeof(report), "%s %4imm ~%3i%s %4i -> %4i",
-             stat, results.distance_mm, results.sigma_mm, sigmaChar, dist_mm, newTof);
-    SerialPort.println(report);
-
-    if (demoMode) {
-        newTof = getDemoInput();
-    }
-    tofOffset = newTof;
 }
 
 // ---------------------------------
@@ -1271,7 +1136,8 @@ void SFXFreqSweepNoise(int duration, int elapsedTime, int freqStart, int freqEnd
 }
 
 void SFXtilt(int amount){
-    auto f = map(abs(amount), 0, TOF_RANGE, 300, 900) + random8(80);
+    // TODO: Update TOF
+    auto f = map(abs(amount), 0, 0, 300, 900) + random8(80);
     if(playerPositionModifier < 0) f -= 500;
     if(playerPositionModifier > 0) f += 200;
     toneAC(f, min(min(abs(amount)/9, 5), AUDIO_VOLUME));
