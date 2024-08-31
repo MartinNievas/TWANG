@@ -17,7 +17,7 @@
 #define MAX_BRIGHTNESS 			255
 
 // JOYSTICK
-#define JOYSTICK_ORIENTATION 0     // 0, 1 or 2 to set the angle of the joystick
+#define JOYSTICK_ORIENTATION 1     // 0, 1 or 2 to set the angle of the joystick
 #define JOYSTICK_DIRECTION   1     // 0/1 to flip joystick direction
 
 #define ATTACK_THRESHOLD     40 // The threshold that triggers an attack
